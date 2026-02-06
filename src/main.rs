@@ -1,5 +1,16 @@
 use macroquad::prelude::*;
 
+mod map;
+mod player;
+mod helpers;
+
+use map::{TileMap, TileSet};
+use player::Player;
+
+const CAMERA_DRAG: f32 = 5.0;
+const TILE_COUNT: usize = 223;
+const TILE_SIZE: f32 = 16.0;
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "FPS Unlimited Demo".to_owned(),
@@ -9,36 +20,55 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    let mut player = Player::new(
+        vec2(200.0, 300.0 + 16.0 / 2.0),
+        helpers::load_single_texture("src/assets/objects", "player08").await.unwrap(),
+        Rect::new(-6.5 / 2.0, -8.0, 6.5, 8.0)
+    );
+
+    let tileset = TileSet::load("src/assets/tiles", TILE_COUNT).await;
+    let mut map = TileMap::demo(1000, 1000, TILE_SIZE, tileset.count());
+
     let mut camera = Camera2D {
-        target: vec2(0.0, 0.0),   // what the camera looks at (world coords)
+        target: player.position(),
         zoom: vec2(1.0 / 400.0, 1.0 / 300.0),
         ..Default::default()
     };
-    set_camera(&camera);
-    let mut x = 200.0;
-    let mut y = 300.0;
-    let mut vx = 0.0;
-    let mut vy = 0.0;
 
     loop {
+        player.update();
+
+        camera.zoom = vec2(6.0 / screen_width(), 6.0 / screen_height());
+        let follow = 1.0 - (-CAMERA_DRAG * get_frame_time()).exp();
+        camera.target += (player.position() - camera.target) * follow;
+
+        set_camera(&camera);
         clear_background(LIGHTGRAY);
 
-        if is_key_down(KeyCode::D) 
-        { vx += 0.3; }
-        if is_key_down(KeyCode::A) 
-        { vx -= 0.3; }
-        if is_key_down(KeyCode::W) 
-        { vy -= 0.3; }
-        if is_key_down(KeyCode::S)  
-        { vy += 0.3; }
+        map.draw_background(
+            &tileset,
+            camera.target,
+            camera.zoom,
+            screen_width(),
+            screen_height(),
+        );
+        map.draw_foreground(
+            &tileset,
+            camera.target,
+            camera.zoom,
+            screen_width(),
+            screen_height(),
+        );
+        player.draw();
+        map.draw_overlay(
+            &tileset,
+            camera.target,
+            camera.zoom,
+            screen_width(),
+            screen_height(),
+        );
 
-        x += vx;
-        y += vy;
-
-        camera.target = vec2(x, y);
-
-        vx *= 0.9;
-        vy *= 0.9;
+        set_default_camera();
         draw_text(
             &format!("FPS: {:.0}", get_fps()),
             20.0,
@@ -46,8 +76,6 @@ async fn main() {
             30.0, // font size
             WHITE
         );
-
-        draw_circle(camera.target.x + vx, camera.target.y + vy, 30.0, RED);
 
         next_frame().await;
     }
