@@ -59,15 +59,6 @@ impl Player {
 
 
     pub fn draw(&self) {
-        // Draw the hitbox
-        draw_rectangle(
-            self.hitbox.x + self.pos.x,
-            self.hitbox.y + self.pos.y,
-            self.hitbox.w,
-            self.hitbox.h,
-            Color::from_hex(0xFF0000),
-        );
-
         let scale = 0.5;
         let center_x = self.texture.width() as f32 * scale / 2.0;
         let center_y = self.texture.height() as f32 * scale / 2.0;

@@ -3,6 +3,25 @@ use macroquad::prelude::*;
 const EMPTY_TILE: u16 = u16::MAX;
 const CHUNK_SIZE: usize = 16;
 
+struct GridIndex {
+    x: i32,
+    y: i32,
+}
+
+impl GridIndex {
+    fn new(position: Vec2, grid_size: Vec2) -> Self {
+        Self {
+            x: (position.x / grid_size.x).floor() as i32,
+            y: (position.y / grid_size.y).floor() as i32,
+        }
+    }
+}
+
+pub struct Tile {
+    position: Vec2,
+    size: Vec2,
+}
+
 pub struct TileSet {
     tiles: Vec<Texture2D>,
 }
@@ -328,7 +347,10 @@ impl TileMap {
         let min_cy = tile_min_y.div_euclid(CHUNK_SIZE as i32).clamp(0, self.chunk_rows as i32 - 1);
         let max_cy = tile_max_y.div_euclid(CHUNK_SIZE as i32).clamp(0, self.chunk_rows as i32 - 1);
 
-        (min_cx, max_cx, min_cy, max_cy)
+        ((min_cx as i32 - 1).max(0).min(self.chunk_cols as i32 - 1),
+        (max_cx as i32 + 1).max(0).min(self.chunk_cols as i32 - 1),
+        (min_cy as i32 - 1).max(0).min(self.chunk_rows as i32 - 1),
+        (max_cy as i32 + 1).max(0).min(self.chunk_rows as i32 - 1))
     }
 
     fn rebuild_chunk_layer_if_dirty(
@@ -385,6 +407,7 @@ impl TileMap {
         ));
         cam.render_target = Some(target.clone());
 
+        push_camera_state();
         set_camera(&cam);
         clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
 
@@ -411,7 +434,7 @@ impl TileMap {
             }
         }
 
-        set_default_camera();
+        pop_camera_state();
     }
 
     fn draw_chunk_layer(&self, chunk_index: usize, layer: LayerKind, cx: usize, cy: usize) {
@@ -445,6 +468,56 @@ impl TileMap {
             LayerKind::Background => self.background[i],
             LayerKind::Foreground => self.foreground[i],
             LayerKind::Overlay => self.overlay[i],
+        }
+    }
+
+    fn get_hitboxes_around_entity(&self, entity_grid_index: GridIndex) -> Vec<Rect> {
+        let grid_size = self.grid_size;
+        let start_x = entity_grid_index.x - 2;
+        let start_y = entity_grid_index.y - 2;
+        let end_x = entity_grid_index.x + 2;
+        let end_y = entity_grid_index.y + 2;
+        let mut hitboxes = Vec::new();
+
+        for x in start_x..=end_x {
+            for y in start_y..=end_y {
+                if let Some(chunk) = self.get_chunk_at_grid_index((x, y)) {
+                    if let Some(tile) = chunk.get_tile_at_grid_index((x, y)) {
+                        hitboxes.push(tile.get_hitbox());
+                    }
+                }
+            }
+        }
+
+        hitboxes
+    }
+
+    fn get_chunk_at_grid_index(&self, grid_index: (i32, i32)) -> Option<&Chunk> {
+        let chunk_cols = self.chunks.len() as i32;
+        let chunk_rows = self.chunks[0].tiles.len() as i32;
+        let chunk_x = grid_index.0 / self.grid_size.x;
+        let chunk_y = grid_index.1 / self.grid_size.y;
+        if chunk_x < chunk_cols && chunk_y < chunk_rows {
+            let chunk_index = (chunk_y * chunk_cols + chunk_x) as usize;
+            if chunk_index < self.chunks.len() {
+                Some(&self.chunks[chunk_index])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn get_tile_at_grid_index(&self, grid_index: (i32, i32)) -> Option<&Tile> {
+        if let Some(chunk) = self.get_chunk_at_grid_index(grid_index) {
+            if let Some(tile) = chunk.get_tile_at_grid_index(grid_index) {
+                Some(tile)
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 
