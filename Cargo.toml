@@ -4,7 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-macroquad = "0.4.14"
+macroquad = { version = "0.4.14", features = ["audio"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"        # best runtime perf, slowest build
+codegen-units = 1  # best runtime perf, slowest build
+panic = "abort"
+debug = 0
+strip = true
+incremental = false

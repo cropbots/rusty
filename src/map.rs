@@ -1,4 +1,6 @@
 use macroquad::prelude::*;
+use serde::Deserialize;
+use std::path::Path;
 
 const EMPTY_TILE: u16 = u16::MAX;
 const CHUNK_SIZE: usize = 16;
@@ -27,9 +29,13 @@ impl TileSet {
         let mut tiles = Vec::with_capacity(count);
         for i in 0..count {
             let path = format!("{}/{}.png", dir, i);
-            let tex = load_texture(&path)
-                .await
-                .unwrap_or_else(|err| panic!("Failed to load {}: {}", path, err));
+            let tex = match load_texture(&path).await {
+                Ok(tex) => tex,
+                Err(err) => {
+                    eprintln!("Failed to load tile {} ({}): {}", i, path, err);
+                    Texture2D::empty()
+                }
+            };
             tex.set_filter(FilterMode::Nearest);
             tiles.push(tex);
         }
@@ -48,12 +54,19 @@ impl TileSet {
     }
 }
 
+#[derive(Clone)]
 pub struct Structure {
     width: usize,
     height: usize,
     background: Vec<u16>,
     foreground: Vec<u16>,
     overlay: Vec<u16>,
+    colliders: Vec<bool>,
+    background_updates: Vec<(usize, usize, u16)>,
+    foreground_updates: Vec<(usize, usize, u16)>,
+    overlay_updates: Vec<(usize, usize, u16)>,
+    occupied_offsets: Vec<(usize, usize)>,
+    collider_offsets: Vec<(usize, usize)>,
 }
 
 impl Structure {
@@ -62,6 +75,7 @@ impl Structure {
         let mut background = vec![EMPTY_TILE; len];
         let mut foreground = vec![EMPTY_TILE; len];
         let mut overlay = vec![EMPTY_TILE; len];
+        let colliders = vec![false; len];
         let max = tile_count.max(1) as u32;
 
         for y in 0..height {
@@ -80,13 +94,7 @@ impl Structure {
             }
         }
 
-        Self {
-            width,
-            height,
-            background,
-            foreground,
-            overlay,
-        }
+        Self::new(width, height, background, foreground, overlay, colliders)
     }
 
     pub fn new(
@@ -95,24 +103,83 @@ impl Structure {
         background: Vec<u16>,
         foreground: Vec<u16>,
         overlay: Vec<u16>,
+        colliders: Vec<bool>,
     ) -> Self {
-        Self {
+        let mut structure = Self {
             width,
             height,
             background,
             foreground,
             overlay,
+            colliders,
+            background_updates: Vec::new(),
+            foreground_updates: Vec::new(),
+            overlay_updates: Vec::new(),
+            occupied_offsets: Vec::new(),
+            collider_offsets: Vec::new(),
+        };
+        structure.rebuild_cache();
+        structure
+    }
+
+    fn rebuild_cache(&mut self) {
+        self.background_updates.clear();
+        self.foreground_updates.clear();
+        self.overlay_updates.clear();
+        self.occupied_offsets.clear();
+        self.collider_offsets.clear();
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let i = y * self.width + x;
+                let mut occupied = false;
+
+                let bg = self.background[i];
+                if bg != EMPTY_TILE && bg != 0 {
+                    self.background_updates.push((x, y, bg));
+                    occupied = true;
+                }
+
+                let fg = self.foreground[i];
+                if fg != EMPTY_TILE && fg != 0 {
+                    self.foreground_updates.push((x, y, fg));
+                    occupied = true;
+                }
+
+                let ov = self.overlay[i];
+                if ov != EMPTY_TILE && ov != 0 {
+                    self.overlay_updates.push((x, y, ov));
+                    occupied = true;
+                }
+
+                let collider = self.colliders.get(i).copied().unwrap_or(false);
+                if collider {
+                    self.collider_offsets.push((x, y));
+                    occupied = true;
+                }
+
+                if occupied {
+                    self.occupied_offsets.push((x, y));
+                }
+            }
         }
     }
 
-    fn tile_at(&self, layer: LayerKind, x: usize, y: usize) -> u16 {
-        let i = y * self.width + x;
-        match layer {
-            LayerKind::Background => self.background[i],
-            LayerKind::Foreground => self.foreground[i],
-            LayerKind::Overlay => self.overlay[i],
-        }
+    fn is_empty(&self) -> bool {
+        self.background_updates.is_empty()
+            && self.foreground_updates.is_empty()
+            && self.overlay_updates.is_empty()
+            && self.collider_offsets.is_empty()
     }
+}
+
+#[derive(Clone)]
+pub struct StructureDef {
+    pub id: String,
+    pub structure: Structure,
+    pub frequency: f32,
+    pub max_per_map: usize,
+    pub min_distance: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -146,11 +213,12 @@ pub struct TileMap {
     chunk_pixel_size: f32,
     chunks: Vec<Chunk>,
     grid_size: Vec2,
+    border_thickness: f32,
 }
 
 impl TileMap {
-    pub fn demo(width: usize, height: usize, tile_size: f32, tile_count: usize) -> Self {
-        let mut map = Self::new(width, height, tile_size, Vec2::new(tile_size, tile_size));
+    pub fn demo(width: usize, height: usize, tile_size: f32, tile_count: usize, border_thickness: f32) -> Self {
+        let mut map = Self::new(width, height, tile_size, Vec2::new(tile_size, tile_size), border_thickness);
 
         if tile_count > 0 {
             map.fill_layer(LayerKind::Background, 24);
@@ -159,7 +227,7 @@ impl TileMap {
         map
     }
 
-    pub fn new(width: usize, height: usize, tile_size: f32, grid_size: Vec2) -> Self {
+    pub fn new(width: usize, height: usize, tile_size: f32, grid_size: Vec2, border_thickness: f32) -> Self {
         let len = width * height;
         let chunk_cols = (width + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let chunk_rows = (height + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -198,7 +266,19 @@ impl TileMap {
             chunk_pixel_size,
             chunks,
             grid_size,
+            border_thickness,
         }
+    }
+
+    pub fn get_border_hitbox(&self) -> Rect {
+        let world_w = self.width as f32 * self.tile_size;
+        let world_h = self.height as f32 * self.tile_size;
+        Rect::new(
+            -self.border_thickness,
+            -self.border_thickness,
+            world_w + self.border_thickness * 2.0,
+            world_h + self.border_thickness * 2.0,
+        )
     }
 
     pub fn draw_background(
@@ -256,26 +336,202 @@ impl TileMap {
     }
 
     pub fn place_structure(&mut self, structure: &Structure, x: usize, y: usize) {
-        for sy in 0..structure.height {
-            for sx in 0..structure.width {
-                let tx = x + sx;
-                let ty = y + sy;
-                if tx >= self.width || ty >= self.height {
+        if x >= self.width || y >= self.height || structure.is_empty() {
+            return;
+        }
+
+        if x + structure.width <= self.width && y + structure.height <= self.height {
+            self.place_structure_unchecked(structure, x, y);
+            return;
+        }
+
+        let max_x = (x + structure.width).min(self.width);
+        let max_y = (y + structure.height).min(self.height);
+        let mut collision_changed = false;
+
+        for &(sx, sy, tile) in structure.background_updates.iter() {
+            let tx = x + sx;
+            let ty = y + sy;
+            if tx >= max_x || ty >= max_y {
+                continue;
+            }
+            let idx = self.idx(tx, ty);
+            self.background[idx] = tile;
+        }
+        for &(sx, sy, tile) in structure.foreground_updates.iter() {
+            let tx = x + sx;
+            let ty = y + sy;
+            if tx >= max_x || ty >= max_y {
+                continue;
+            }
+            let idx = self.idx(tx, ty);
+            self.foreground[idx] = tile;
+        }
+        for &(sx, sy, tile) in structure.overlay_updates.iter() {
+            let tx = x + sx;
+            let ty = y + sy;
+            if tx >= max_x || ty >= max_y {
+                continue;
+            }
+            let idx = self.idx(tx, ty);
+            self.overlay[idx] = tile;
+        }
+        for &(sx, sy) in structure.collider_offsets.iter() {
+            let tx = x + sx;
+            let ty = y + sy;
+            if tx >= max_x || ty >= max_y {
+                continue;
+            }
+            let idx = self.idx(tx, ty);
+            if !self.solid[idx] {
+                self.solid[idx] = true;
+                collision_changed = true;
+            }
+        }
+
+        if collision_changed {
+            self.collision_dirty = true;
+        }
+
+        let width = max_x.saturating_sub(x);
+        let height = max_y.saturating_sub(y);
+        self.mark_chunks_dirty_rect(
+            x,
+            y,
+            width,
+            height,
+            !structure.background_updates.is_empty(),
+            !structure.foreground_updates.is_empty(),
+            !structure.overlay_updates.is_empty(),
+        );
+    }
+
+    fn place_structure_unchecked(&mut self, structure: &Structure, x: usize, y: usize) {
+        let mut collision_changed = false;
+
+        for &(sx, sy, tile) in structure.background_updates.iter() {
+            let idx = self.idx(x + sx, y + sy);
+            self.background[idx] = tile;
+        }
+        for &(sx, sy, tile) in structure.foreground_updates.iter() {
+            let idx = self.idx(x + sx, y + sy);
+            self.foreground[idx] = tile;
+        }
+        for &(sx, sy, tile) in structure.overlay_updates.iter() {
+            let idx = self.idx(x + sx, y + sy);
+            self.overlay[idx] = tile;
+        }
+        for &(sx, sy) in structure.collider_offsets.iter() {
+            let idx = self.idx(x + sx, y + sy);
+            if !self.solid[idx] {
+                self.solid[idx] = true;
+                collision_changed = true;
+            }
+        }
+
+        if collision_changed {
+            self.collision_dirty = true;
+        }
+
+        self.mark_chunks_dirty_rect(
+            x,
+            y,
+            structure.width,
+            structure.height,
+            !structure.background_updates.is_empty(),
+            !structure.foreground_updates.is_empty(),
+            !structure.overlay_updates.is_empty(),
+        );
+    }
+
+    pub fn apply_structures(&mut self, defs: &[StructureDef], seed: u32) {
+        let mut occupied = vec![false; self.width * self.height];
+        let mut placed_rects: Vec<Rect> = Vec::new();
+
+        let world_w = self.width as f32 * self.tile_size;
+        let world_h = self.height as f32 * self.tile_size;
+        let cell_size = self.chunk_pixel_size.max(self.tile_size);
+        let cell_cols = ((world_w / cell_size).ceil() as usize).max(1);
+        let cell_rows = ((world_h / cell_size).ceil() as usize).max(1);
+        let mut spatial: Vec<Vec<usize>> = vec![Vec::new(); cell_cols * cell_rows];
+
+        let area = (self.width * self.height) as f32;
+        for (def_index, def) in defs.iter().enumerate() {
+            let freq = def.frequency.clamp(0.0, 1.0);
+            if freq <= 0.0 || def.max_per_map == 0 || def.structure.is_empty() {
+                continue;
+            }
+
+            let target = ((area * freq).round() as usize).min(def.max_per_map);
+            if target == 0 {
+                continue;
+            }
+
+            let attempts = (target * 12).max(24);
+            if def.structure.width == 0
+                || def.structure.height == 0
+                || self.width < def.structure.width
+                || self.height < def.structure.height
+            {
+                continue;
+            }
+            let max_x = self.width - def.structure.width;
+            let max_y = self.height - def.structure.height;
+
+            let mut count = 0usize;
+            for i in 0..attempts {
+                if count >= target {
+                    break;
+                }
+                let rx = hash_u32(i as u32, seed ^ (def_index as u32 * 2654435761), 31);
+                let ry = hash_u32(i as u32, seed ^ (def_index as u32 * 2246822519), 47);
+                let x = (rx as usize % (max_x + 1)).min(max_x);
+                let y = (ry as usize % (max_y + 1)).min(max_y);
+
+                let pos = vec2(x as f32 * self.tile_size, y as f32 * self.tile_size);
+                let size = vec2(
+                    def.structure.width as f32 * self.tile_size,
+                    def.structure.height as f32 * self.tile_size,
+                );
+                let rect = Rect::new(pos.x, pos.y, size.x, size.y);
+                let padded = if def.min_distance > 0.0 {
+                    Rect::new(
+                        rect.x - def.min_distance,
+                        rect.y - def.min_distance,
+                        rect.w + def.min_distance * 2.0,
+                        rect.h + def.min_distance * 2.0,
+                    )
+                } else {
+                    rect
+                };
+
+                if spatial_overlaps(&padded, &placed_rects, &spatial, cell_size, cell_cols, cell_rows) {
                     continue;
                 }
-                let bg = structure.tile_at(LayerKind::Background, sx, sy);
-                let fg = structure.tile_at(LayerKind::Foreground, sx, sy);
-                let ov = structure.tile_at(LayerKind::Overlay, sx, sy);
 
-                if bg != EMPTY_TILE {
-                    self.set_tile(LayerKind::Background, tx, ty, bg);
+                let mut blocked = false;
+                for &(sx, sy) in def.structure.occupied_offsets.iter() {
+                    let idx = self.idx(x + sx, y + sy);
+                    if occupied[idx] {
+                        blocked = true;
+                        break;
+                    }
                 }
-                if fg != EMPTY_TILE {
-                    self.set_tile(LayerKind::Foreground, tx, ty, fg);
+
+                if blocked {
+                    continue;
                 }
-                if ov != EMPTY_TILE {
-                    self.set_tile(LayerKind::Overlay, tx, ty, ov);
+
+                self.place_structure_unchecked(&def.structure, x, y);
+                for &(sx, sy) in def.structure.occupied_offsets.iter() {
+                    let idx = self.idx(x + sx, y + sy);
+                    occupied[idx] = true;
                 }
+
+                placed_rects.push(padded);
+                let rect_index = placed_rects.len() - 1;
+                spatial_insert(rect_index, &padded, &mut spatial, cell_size, cell_cols, cell_rows);
+                count += 1;
             }
         }
     }
@@ -620,6 +876,12 @@ impl TileMap {
 
     pub fn hitboxes_around_grid(&self, grid: GridIndex, radius: i32) -> Vec<Rect> {
         let mut hitboxes = Vec::new();
+        self.fill_hitboxes_around_grid(grid, radius, &mut hitboxes);
+        hitboxes
+    }
+
+    pub fn fill_hitboxes_around_grid(&self, grid: GridIndex, radius: i32, out: &mut Vec<Rect>) {
+        out.clear();
         let start_x = grid.x - radius;
         let end_x = grid.x + radius;
         let start_y = grid.y - radius;
@@ -634,13 +896,53 @@ impl TileMap {
                 if ux >= self.width || uy >= self.height {
                     continue;
                 }
-                if self.is_solid(ux, uy) {
-                    hitboxes.push(self.tile_bounds(ux, uy));
+                if self.solid[self.idx(ux, uy)] {
+                    out.push(self.tile_bounds(ux, uy));
                 }
             }
         }
+    }
 
-        hitboxes
+    pub fn tile_size(&self) -> f32 {
+        self.tile_size
+    }
+
+    fn mark_chunks_dirty_rect(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        mark_background: bool,
+        mark_foreground: bool,
+        mark_overlay: bool,
+    ) {
+        if width == 0 || height == 0 || (!mark_background && !mark_foreground && !mark_overlay) {
+            return;
+        }
+
+        let end_x = (x + width - 1).min(self.width.saturating_sub(1));
+        let end_y = (y + height - 1).min(self.height.saturating_sub(1));
+        let start_cx = x / CHUNK_SIZE;
+        let start_cy = y / CHUNK_SIZE;
+        let end_cx = end_x / CHUNK_SIZE;
+        let end_cy = end_y / CHUNK_SIZE;
+
+        for cy in start_cy..=end_cy {
+            for cx in start_cx..=end_cx {
+                let chunk_index = self.chunk_index(cx, cy);
+                let chunk = &mut self.chunks[chunk_index];
+                if mark_background {
+                    chunk.dirty_background = true;
+                }
+                if mark_foreground {
+                    chunk.dirty_foreground = true;
+                }
+                if mark_overlay {
+                    chunk.dirty_overlay = true;
+                }
+            }
+        }
     }
 
     fn mark_chunk_dirty(&mut self, x: usize, y: usize, layer: LayerKind) {
@@ -667,10 +969,137 @@ impl TileMap {
     }
 }
 
+fn spatial_cell_range(
+    rect: &Rect,
+    cell_size: f32,
+    cols: usize,
+    rows: usize,
+) -> (usize, usize, usize, usize) {
+    let max_col = cols.saturating_sub(1) as i32;
+    let max_row = rows.saturating_sub(1) as i32;
+    let min_cx = (rect.x / cell_size).floor() as i32;
+    let max_cx = ((rect.x + rect.w) / cell_size).floor() as i32;
+    let min_cy = (rect.y / cell_size).floor() as i32;
+    let max_cy = ((rect.y + rect.h) / cell_size).floor() as i32;
+
+    let min_cx = min_cx.clamp(0, max_col);
+    let max_cx = max_cx.clamp(0, max_col);
+    let min_cy = min_cy.clamp(0, max_row);
+    let max_cy = max_cy.clamp(0, max_row);
+
+    (min_cx as usize, max_cx as usize, min_cy as usize, max_cy as usize)
+}
+
+fn spatial_overlaps(
+    rect: &Rect,
+    placed: &[Rect],
+    grid: &[Vec<usize>],
+    cell_size: f32,
+    cols: usize,
+    rows: usize,
+) -> bool {
+    if placed.is_empty() {
+        return false;
+    }
+
+    let (min_cx, max_cx, min_cy, max_cy) = spatial_cell_range(rect, cell_size, cols, rows);
+    for cy in min_cy..=max_cy {
+        for cx in min_cx..=max_cx {
+            let cell = &grid[cy * cols + cx];
+            for &idx in cell {
+                if placed[idx].overlaps(rect) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn spatial_insert(
+    index: usize,
+    rect: &Rect,
+    grid: &mut [Vec<usize>],
+    cell_size: f32,
+    cols: usize,
+    rows: usize,
+) {
+    let (min_cx, max_cx, min_cy, max_cy) = spatial_cell_range(rect, cell_size, cols, rows);
+    for cy in min_cy..=max_cy {
+        for cx in min_cx..=max_cx {
+            grid[cy * cols + cx].push(index);
+        }
+    }
+}
+
 fn hash_u32(x: u32, y: u32, seed: u32) -> u32 {
     let mut v = x.wrapping_mul(0x9E3779B1) ^ y.wrapping_mul(0x85EBCA6B) ^ seed;
     v ^= v >> 16;
     v = v.wrapping_mul(0x7FEB352D);
     v ^= v >> 15;
     v
+}
+
+pub fn load_structures_from_dir(dir: impl AsRef<Path>) -> Result<Vec<StructureDef>, std::io::Error> {
+    if cfg!(target_arch = "wasm32") {
+        return Ok(Vec::new());
+    }
+    let dir = dir.as_ref();
+    let mut defs = Vec::new();
+    if !dir.exists() {
+        return Ok(defs);
+    }
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let raw: StructureFile = serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tile_len = raw.width * raw.height;
+        let mut colliders = raw.colliders.unwrap_or_default();
+        if colliders.len() != tile_len {
+            colliders = vec![false; tile_len];
+        }
+        let structure = Structure::new(
+            raw.width,
+            raw.height,
+            raw.background,
+            raw.foreground,
+            raw.overlay,
+            colliders,
+        );
+
+        defs.push(StructureDef {
+            id: raw.id,
+            structure,
+            frequency: raw.frequency.unwrap_or(0.05),
+            max_per_map: raw.max_per_map.unwrap_or(10),
+            min_distance: raw.min_distance.unwrap_or(64.0),
+        });
+    }
+
+    Ok(defs)
+}
+
+#[derive(Deserialize)]
+struct StructureFile {
+    id: String,
+    width: usize,
+    height: usize,
+    background: Vec<u16>,
+    #[serde(default)]
+    foreground: Vec<u16>,
+    #[serde(default)]
+    overlay: Vec<u16>,
+    #[serde(default)]
+    colliders: Option<Vec<bool>>,
+    #[serde(default)]
+    frequency: Option<f32>,
+    #[serde(default)]
+    max_per_map: Option<usize>,
+    #[serde(default)]
+    min_distance: Option<f32>,
 }

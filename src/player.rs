@@ -1,11 +1,19 @@
 use macroquad::prelude::*;
 
+use crate::helpers::{clamp_hitbox_to_rect, resolve_collisions_axis, Axis};
+use crate::map::TileMap;
+
 pub struct Player {
     pos: Vec2,
     vel: Vec2,
     hitbox: Rect,
     radius: f32,
-    texture: Texture2D,
+    pub texture: Texture2D,
+    last_move_dir: Vec2,
+    dash_timer: f32,
+    dash_cooldown: f32,
+    dash_dir: Vec2,
+    collision_scratch: Vec<Rect>,
 }
 
 impl Player {
@@ -16,10 +24,15 @@ impl Player {
             hitbox,
             radius: 5.0,
             texture,
+            last_move_dir: Vec2::ZERO,
+            dash_timer: 0.0,
+            dash_cooldown: 0.0,
+            dash_dir: Vec2::ZERO,
+            collision_scratch: Vec::with_capacity(25),
         }
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self, map: &TileMap) {
         let dt = get_frame_time();
 
         let mut input = vec2(0.0, 0.0);
@@ -38,23 +51,98 @@ impl Player {
 
         if input.length_squared() > 0.0 {
             input = input.normalize();
+            self.last_move_dir = input;
         }
 
         let accel = 1800.0;
         let max_speed = 640.0;
         let damping = 8.0;
+        let dash_speed = 1100.0;
+        let dash_duration = 0.07;
+        let dash_cooldown = 0.5;
 
-        self.vel += input * accel * dt;
+        if self.dash_cooldown > 0.0 {
+            self.dash_cooldown = (self.dash_cooldown - dt).max(0.0);
+        }
+
+        if self.dash_timer > 0.0 {
+            self.dash_timer = (self.dash_timer - dt).max(0.0);
+        }
+
+        if self.dash_timer <= 0.0
+            && self.dash_cooldown <= 0.0
+            && is_key_pressed(KeyCode::Space)
+        {
+            let dir = if input.length_squared() > 0.0 {
+                input
+            } else {
+                self.last_move_dir
+            };
+            if dir.length_squared() > 0.0 {
+                self.dash_dir = dir.normalize();
+                self.dash_timer = dash_duration;
+                self.dash_cooldown = dash_cooldown;
+            }
+        }
+
+        if self.dash_timer > 0.0 {
+            self.vel = self.dash_dir * dash_speed;
+        } else {
+            self.vel += input * accel * dt;
+        }
 
         let speed = self.vel.length();
         if speed > max_speed {
             self.vel = self.vel / speed * max_speed;
         }
 
-        let decay = (1.0 - damping * dt).clamp(0.0, 1.0);
-        self.vel *= decay;
+        if self.dash_timer <= 0.0 {
+            let decay = (1.0 - damping * dt).clamp(0.0, 1.0);
+            self.vel *= decay;
+        }
 
-        self.pos += self.vel * dt;
+        let mut pos = self.pos;
+        let mut vel = self.vel;
+
+        pos.x += vel.x * dt;
+        if !self.is_dashing() {
+            if let Some(grid) = map.grid_index(pos) {
+                let radius = collision_radius(map, vel, dt);
+                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                let (resolved, vx) = resolve_collisions_axis(
+                    self.hitbox,
+                    pos,
+                    vel.x,
+                    &self.collision_scratch,
+                    Axis::X,
+                );
+                pos = resolved;
+                vel.x = vx;
+            }
+        }
+
+        pos.y += vel.y * dt;
+        if !self.is_dashing() {
+            if let Some(grid) = map.grid_index(pos) {
+                let radius = collision_radius(map, vel, dt);
+                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                let (resolved, vy) = resolve_collisions_axis(
+                    self.hitbox,
+                    pos,
+                    vel.y,
+                    &self.collision_scratch,
+                    Axis::Y,
+                );
+                pos = resolved;
+                vel.y = vy;
+            }
+        }
+
+        self.pos = pos;
+        self.vel = vel;
+
+        let border = map.get_border_hitbox();
+        self.pos = clamp_hitbox_to_rect(self.hitbox, self.pos, border);
     }
 
 
@@ -78,4 +166,22 @@ impl Player {
     pub fn position(&self) -> Vec2 {
         self.pos
     }
+
+    pub fn velocity(&self) -> Vec2 {
+        self.vel
+    }
+
+    pub fn is_dashing(&self) -> bool {
+        self.dash_timer > 0.0
+    }
+
+    pub fn is_moving(&self, deadzone: f32) -> bool {
+        self.vel.length() > deadzone
+    }
+}
+
+fn collision_radius(map: &TileMap, vel: Vec2, dt: f32) -> i32 {
+    let speed = vel.length();
+    let tiles = (speed * dt / map.tile_size().max(1.0)).ceil() as i32;
+    (1 + tiles).clamp(1, 4)
 }

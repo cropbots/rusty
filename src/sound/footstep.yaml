@@ -1,0 +1,6 @@
+id: footstep
+path: "src/assets/sounds/grass.wav"
+channel: sfx
+volume: 0.5
+looped: false
+spatial: false

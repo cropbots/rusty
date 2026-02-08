@@ -1,4 +1,5 @@
 use macroquad::prelude::*;
+use crate::helpers::asset_path;
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
@@ -129,6 +130,45 @@ pub struct DrawParams {
     pub offset: Vec2,
 }
 
+pub struct Entity {
+    pub instance: EntityInstance,
+}
+
+impl Entity {
+    pub fn spawn(
+        db: &EntityDatabase,
+        id: &str,
+        pos: Vec2,
+        registry: &MovementRegistry,
+    ) -> Option<Self> {
+        db.spawn(id, pos, registry)
+            .map(|instance| Self { instance })
+    }
+
+    pub fn update(&mut self, dt: f32, db: &EntityDatabase, ctx: &EntityContext, map: &crate::map::TileMap) {
+        self.instance.update(dt, db, ctx, map);
+    }
+
+    pub fn draw(&self, db: &EntityDatabase) {
+        self.instance.draw(db);
+    }
+
+    pub fn hitbox(&self, db: &EntityDatabase) -> Rect {
+        self.instance.hitbox(db)
+    }
+
+    pub fn position(&self) -> Vec2 {
+        self.instance.pos
+    }
+
+    pub fn clamp_to_map(&mut self, map: &crate::map::TileMap, db: &EntityDatabase) {
+        let bounds = map.get_border_hitbox();
+        let def = &db.entities[self.instance.def];
+        self.instance.pos =
+            crate::helpers::clamp_hitbox_to_rect(def.hitbox, self.instance.pos, bounds);
+    }
+}
+
 #[derive(Clone)]
 pub struct EntityDef {
     pub id: String,
@@ -141,6 +181,7 @@ pub struct EntityDef {
     pub behavior_tree: Option<BehaviorNode>,
     pub base_stats: StatBlock,
     pub speed: f32,
+    pub collides: bool,
 }
 
 impl EntityDef {
@@ -191,10 +232,11 @@ pub struct EntityInstance {
     pub speed: f32,
     pub behaviors: Vec<BehaviorRuntime>,
     pub stats: StatBlock,
+    pub collision_scratch: Vec<Rect>,
 }
 
 impl EntityInstance {
-    pub fn update(&mut self, dt: f32, db: &EntityDatabase, ctx: &EntityContext) {
+    pub fn update(&mut self, dt: f32, db: &EntityDatabase, ctx: &EntityContext, map: &crate::map::TileMap) {
         self.vel = Vec2::ZERO;
         let mut behaviors = std::mem::take(&mut self.behaviors);
         for behavior in behaviors.iter_mut() {
@@ -211,6 +253,45 @@ impl EntityInstance {
         let speed = self.vel.length();
         if speed > max_speed {
             self.vel = self.vel / speed * max_speed;
+        }
+
+        let def = &db.entities[self.def];
+        if def.collides {
+            let mut pos = self.pos;
+            let mut vel = self.vel;
+
+            pos.x += vel.x * dt;
+            if let Some(grid) = map.grid_index(pos) {
+                let radius = collision_radius(map, vel, dt);
+                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                let (resolved, vx) = crate::helpers::resolve_collisions_axis(
+                    def.hitbox,
+                    pos,
+                    vel.x,
+                    &self.collision_scratch,
+                    crate::helpers::Axis::X,
+                );
+                pos = resolved;
+                vel.x = vx;
+            }
+
+            pos.y += vel.y * dt;
+            if let Some(grid) = map.grid_index(pos) {
+                let radius = collision_radius(map, vel, dt);
+                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                let (resolved, vy) = crate::helpers::resolve_collisions_axis(
+                    def.hitbox,
+                    pos,
+                    vel.y,
+                    &self.collision_scratch,
+                    crate::helpers::Axis::Y,
+                );
+                pos = resolved;
+                vel.y = vy;
+            }
+
+            self.pos = pos;
+            self.vel = vel;
         }
     }
 
@@ -249,6 +330,10 @@ impl MovementRegistry {
             .copied()
             .unwrap_or(movement_idle)
     }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.fns.contains_key(name)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -267,6 +352,9 @@ pub struct EntityDatabase {
 
 impl EntityDatabase {
     pub async fn load_from(root: impl AsRef<Path>) -> Result<Self, EntityLoadError> {
+        if cfg!(target_arch = "wasm32") {
+            return Ok(Self::empty());
+        }
         let root = root.as_ref();
         let behavior_dir = root.join("behaviour");
         let trait_dir = root.join("trait");
@@ -328,6 +416,17 @@ impl EntityDatabase {
         self.entity_lookup.get(id).copied()
     }
 
+    pub fn empty() -> Self {
+        Self {
+            traits: Vec::new(),
+            behaviors: Vec::new(),
+            entities: Vec::new(),
+            trait_lookup: HashMap::new(),
+            behavior_lookup: HashMap::new(),
+            entity_lookup: HashMap::new(),
+        }
+    }
+
     pub fn spawn(
         &self,
         id: &str,
@@ -343,12 +442,18 @@ impl EntityDatabase {
         }
 
         let mut behaviors = Vec::new();
-        if let Some(tree) = &def.behavior_tree {
-            let _ = tree;
+        let mut action = def
+            .behavior_tree
+            .as_ref()
+            .and_then(|tree| first_action_with_registry(tree, registry))
+            .unwrap_or("idle");
+
+        if !registry.has(action) {
+            action = "idle";
         }
 
         behaviors.push(BehaviorRuntime {
-            func: registry.resolve("idle"),
+            func: registry.resolve(action),
             params: MovementParams::new(),
             timer: 0.0,
             dir: Vec2::ZERO,
@@ -361,7 +466,38 @@ impl EntityDatabase {
             speed: def.speed,
             behaviors,
             stats,
+            collision_scratch: Vec::with_capacity(25),
         })
+    }
+}
+
+fn collision_radius(map: &crate::map::TileMap, vel: Vec2, dt: f32) -> i32 {
+    let speed = vel.length();
+    let tiles = (speed * dt / map.tile_size().max(1.0)).ceil() as i32;
+    (1 + tiles).clamp(1, 4)
+}
+
+fn first_action_with_registry<'a>(
+    node: &'a BehaviorNode,
+    registry: &MovementRegistry,
+) -> Option<&'a str> {
+    match node {
+        BehaviorNode::Action { name } => {
+            if registry.has(name) {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        }
+        BehaviorNode::Selector { children } | BehaviorNode::Sequence { children } => {
+            for child in children {
+                if let Some(name) = first_action_with_registry(child, registry) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+        BehaviorNode::Condition { .. } => None,
     }
 }
 
@@ -490,7 +626,7 @@ async fn load_entities_from_dir(
             None
         };
 
-        let tex = load_texture(&raw.visuals.sprite)
+        let tex = load_texture(&asset_path(&raw.visuals.sprite))
             .await
             .map_err(|err| EntityLoadError::Texture(err.to_string()))?;
         tex.set_filter(FilterMode::Nearest);
@@ -508,9 +644,10 @@ async fn load_entities_from_dir(
             .map(|v| vec2(v[0], v[1]));
         let pivot = draw_params.pivot.map(|v| vec2(v[0], v[1]));
 
+        // Center hitbox on the sprite, while allowing YAML x/y to act as a center offset.
         let hitbox = Rect::new(
-            raw.hitbox.x,
-            raw.hitbox.y,
+            -raw.hitbox.w + raw.hitbox.x,
+            -raw.hitbox.h * 1.5 + raw.hitbox.y,
             raw.hitbox.w,
             raw.hitbox.h,
         );
@@ -542,6 +679,7 @@ async fn load_entities_from_dir(
             behavior_tree,
             base_stats,
             speed: raw.speed,
+            collides: raw.collides.unwrap_or(true),
         };
 
         let index = entities.len();
@@ -595,6 +733,8 @@ struct EntityFile {
     #[serde(default = "default_speed")]
     speed: f32,
     kind: Option<EntityKind>,
+    #[serde(default)]
+    collides: Option<bool>,
     #[serde(default)]
     behavior: Option<BehaviorNode>,
     #[serde(default)]
