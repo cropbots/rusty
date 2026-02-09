@@ -23,6 +23,23 @@ pub fn asset_path(path: &str) -> String {
     path.to_string()
 }
 
+pub fn data_root() -> &'static str {
+    if cfg!(target_arch = "wasm32") {
+        "assets"
+    } else {
+        "src"
+    }
+}
+
+pub fn data_path(path: &str) -> String {
+    if cfg!(target_arch = "wasm32") {
+        if let Some(stripped) = path.strip_prefix("src/") {
+            return format!("{}/{}", data_root(), stripped);
+        }
+    }
+    path.to_string()
+}
+
 pub fn asset_dir(subdir: &str) -> String {
     format!("{}/{}", asset_root(), subdir.trim_start_matches('/'))
 }

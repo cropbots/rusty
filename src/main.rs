@@ -8,6 +8,7 @@ mod helpers;
 mod entity;
 mod r#trait;
 mod particle;
+mod tilemap;
 mod sound;
 
 use map::{TileMap, TileSet, load_structures_from_dir};
@@ -18,14 +19,10 @@ use sound::SoundSystem;
 use particle::ParticleSystem;
 
 const CAMERA_DRAG: f32 = 5.0;
-const TILE_COUNT: usize = 223;
 const TILE_SIZE: f32 = 16.0;
 const MOVE_DEADZONE: f32 = 16.0;
 const FOOTSTEP_INTERVAL: f32 = 0.2;
 const CAMERA_FOV: f32 = 200.0;
-const RENDER_SCALE_1080P: f32 = 0.66;
-const RENDER_SCALE_1440P: f32 = 0.5;
-const RENDER_SCALE_4K: f32 = 0.5;
 
 fn window_conf() -> Conf {
     let icon = load_window_icon(&helpers::asset_path("src/assets/favicon.png"));
@@ -35,7 +32,7 @@ fn window_conf() -> Conf {
         sample_count: 1,
         platform: Platform {
             linux_wm_class: "cropbots",
-            webgl_version: miniquad::conf::WebGLVersion::WebGL1,
+            webgl_version: miniquad::conf::WebGLVersion::WebGL2,
             ..Default::default()
         },
         ..Default::default()
@@ -67,16 +64,24 @@ fn load_window_icon(path: &str) -> Option<Icon> {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    // Load the map
-    let tileset = TileSet::load(&helpers::asset_dir("tiles"), TILE_COUNT).await;
+    // Load the tileset atlas (tileset.json + tileset.png)
+    let tileset = TileSet::load("src/assets/tileset.json", "src/assets/tileset.png")
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("tileset load failed: {err}");
+            eprintln!("Please ensure src/assets/tileset.json and src/assets/tileset.png exist");
+            panic!("Tileset loading failed");
+        });
     let mut maps = TileMap::demo(512, 512, TILE_SIZE, tileset.count(), 0.0);
 
     // Load structures from JSON and apply them with a fixed seed.
-    let structures = load_structures_from_dir("src/structure").unwrap_or_else(|err| {
+    let structures = load_structures_from_dir("src/structure").await.unwrap_or_else(|err| {
         eprintln!("structure load failed: {err}");
         Vec::new()
     });
-    maps.apply_structures(&structures, 1337);
+    if !structures.is_empty() {
+        maps.apply_structures(&structures, 1337);
+    }
 
     // Player
     let player_texture = helpers::load_single_texture("src/assets/objects", "player08")
@@ -98,10 +103,11 @@ async fn main() {
     let mut i: f32 = 0.0;
     let mut fps: i32 = 0;
 
-    let mut render_scale = render_scale_for_resolution(screen_width(), screen_height());
+    let use_render_target = false;
+    let render_scale = 0.5;
     let mut scene_target = create_scene_target(render_scale, screen_width(), screen_height());
-    let mut scene_size = vec2(scene_target.texture.width(), scene_target.texture.height());
-    let mut use_render_target = render_scale < 0.999;
+    let mut last_screen_width = screen_width();
+    let mut last_screen_height = screen_height();
     camera.zoom = camera_zoom_for_fov(CAMERA_FOV, use_render_target);
     camera.render_target = if use_render_target {
         Some(scene_target.clone())
@@ -146,18 +152,20 @@ async fn main() {
     
     loop {
         let dt = get_frame_time();
-        player.update(&maps);
-
-        let desired_scale = render_scale_for_resolution(screen_width(), screen_height());
-        let desired_w = (screen_width() * desired_scale).round().max(1.0) as u32;
-        let desired_h = (screen_height() * desired_scale).round().max(1.0) as u32;
-        let desired_use_target = desired_scale < 0.999;
-        if desired_w != scene_size.x as u32 || desired_h != scene_size.y as u32 {
-            render_scale = desired_scale;
-            scene_target = create_scene_target(render_scale, screen_width(), screen_height());
-            scene_size = vec2(scene_target.texture.width(), scene_target.texture.height());
+        
+        // Check for resolution changes and recreate render target if needed
+        if use_render_target {
+            let current_width = screen_width();
+            let current_height = screen_height();
+            if current_width != last_screen_width || current_height != last_screen_height {
+                scene_target = create_scene_target(render_scale, current_width, current_height);
+                last_screen_width = current_width;
+                last_screen_height = current_height;
+            }
         }
-        use_render_target = desired_use_target;
+        
+        player.update(&maps);
+        
         let particle_budget = particle_budget_scale(
             screen_width(),
             screen_height(),
@@ -304,19 +312,6 @@ async fn main() {
         );
 
         next_frame().await;
-    }
-}
-
-fn render_scale_for_resolution(width: f32, height: f32) -> f32 {
-    let pixels = width * height;
-    if pixels >= 3840.0 * 2160.0 {
-        RENDER_SCALE_4K
-    } else if pixels >= 2560.0 * 1440.0 {
-        RENDER_SCALE_1440P
-    } else if pixels >= 1920.0 * 1080.0 {
-        RENDER_SCALE_1080P
-    } else {
-        1.0
     }
 }
 

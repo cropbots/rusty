@@ -1,0 +1,24 @@
+{
+  "id": "tree_plains",
+  "width": 2,
+  "height": 3,
+  "background": [0,0,0,0,0,0],
+  "foreground": [
+    0,0,
+    0,0,
+    191,192
+  ],
+  "colliders": [
+    false, false, 
+    false, false, 
+    true, true
+  ],
+  "overlay": [
+    157,158,
+    174,175,
+    0,0
+  ],
+  "frequency": 0.05,
+  "max_per_map": 7500,
+  "min_distance": 5.0
+}

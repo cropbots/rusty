@@ -1,5 +1,6 @@
 use macroquad::prelude::*;
-use crate::helpers::asset_path;
+use macroquad::file::load_string;
+use crate::helpers::{asset_path, data_path};
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
@@ -352,55 +353,94 @@ pub struct EntityDatabase {
 
 impl EntityDatabase {
     pub async fn load_from(root: impl AsRef<Path>) -> Result<Self, EntityLoadError> {
-        if cfg!(target_arch = "wasm32") {
-            return Ok(Self::empty());
-        }
-        let root = root.as_ref();
-        let behavior_dir = root.join("behaviour");
-        let trait_dir = root.join("trait");
-        let enemy_dir = root.join("enemy");
-        let friend_dir = root.join("friend");
-        let misc_dir = root.join("misc");
-
-        let behaviors = load_behaviors(&behavior_dir)?;
-        let traits = load_traits(&trait_dir)?;
+        let root_path = root.as_ref().to_path_buf();
+        let (behaviors, traits) = if cfg!(target_arch = "wasm32") {
+            let root = data_path(&root_path.to_string_lossy());
+            let behaviors = load_behaviors_wasm(&format!("{}/behaviour", root)).await?;
+            let traits = load_traits_wasm(&format!("{}/trait", root)).await?;
+            (behaviors, traits)
+        } else {
+            let behavior_dir = root_path.join("behaviour");
+            let trait_dir = root_path.join("trait");
+            (load_behaviors(&behavior_dir)?, load_traits(&trait_dir)?)
+        };
         let (trait_lookup, behavior_lookup) = build_lookups(&traits, &behaviors);
 
         let mut entities = Vec::new();
         let mut entity_lookup = HashMap::new();
-        load_entities_from_dir(
-            &enemy_dir,
-            EntityKind::Enemy,
-            &trait_lookup,
-            &behavior_lookup,
-            &traits,
-            &behaviors,
-            &mut entities,
-            &mut entity_lookup,
-        )
-        .await?;
-        load_entities_from_dir(
-            &friend_dir,
-            EntityKind::Friend,
-            &trait_lookup,
-            &behavior_lookup,
-            &traits,
-            &behaviors,
-            &mut entities,
-            &mut entity_lookup,
-        )
-        .await?;
-        load_entities_from_dir(
-            &misc_dir,
-            EntityKind::Misc,
-            &trait_lookup,
-            &behavior_lookup,
-            &traits,
-            &behaviors,
-            &mut entities,
-            &mut entity_lookup,
-        )
-        .await?;
+        if cfg!(target_arch = "wasm32") {
+            let root = data_path(&root_path.to_string_lossy());
+            load_entities_from_dir_wasm(
+                &format!("{}/enemy", root),
+                EntityKind::Enemy,
+                &trait_lookup,
+                &behavior_lookup,
+                &traits,
+                &behaviors,
+                &mut entities,
+                &mut entity_lookup,
+            )
+            .await?;
+            load_entities_from_dir_wasm(
+                &format!("{}/friend", root),
+                EntityKind::Friend,
+                &trait_lookup,
+                &behavior_lookup,
+                &traits,
+                &behaviors,
+                &mut entities,
+                &mut entity_lookup,
+            )
+            .await?;
+            load_entities_from_dir_wasm(
+                &format!("{}/misc", root),
+                EntityKind::Misc,
+                &trait_lookup,
+                &behavior_lookup,
+                &traits,
+                &behaviors,
+                &mut entities,
+                &mut entity_lookup,
+            )
+            .await?;
+        } else {
+            let enemy_dir = root_path.join("enemy");
+            let friend_dir = root_path.join("friend");
+            let misc_dir = root_path.join("misc");
+            load_entities_from_dir(
+                &enemy_dir,
+                EntityKind::Enemy,
+                &trait_lookup,
+                &behavior_lookup,
+                &traits,
+                &behaviors,
+                &mut entities,
+                &mut entity_lookup,
+            )
+            .await?;
+            load_entities_from_dir(
+                &friend_dir,
+                EntityKind::Friend,
+                &trait_lookup,
+                &behavior_lookup,
+                &traits,
+                &behaviors,
+                &mut entities,
+                &mut entity_lookup,
+            )
+            .await?;
+            load_entities_from_dir(
+                &misc_dir,
+                EntityKind::Misc,
+                &trait_lookup,
+                &behavior_lookup,
+                &traits,
+                &behaviors,
+                &mut entities,
+                &mut entity_lookup,
+            )
+            .await?;
+        }
 
         Ok(Self {
             traits,
@@ -566,6 +606,168 @@ fn load_traits(dir: &Path) -> Result<Vec<TraitDef>, EntityLoadError> {
     }
 
     Ok(traits)
+}
+
+async fn load_behaviors_wasm(dir: &str) -> Result<Vec<BehaviorDef>, EntityLoadError> {
+    let mut behaviors = Vec::new();
+    let files = ["goblin.yaml"];
+    for file in files {
+        let path = format!("{}/{}", dir, file);
+        let raw_str = load_string(&path)
+            .await
+            .map_err(|e| EntityLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        let raw: BehaviorFile = serde_yaml::from_str(&raw_str)?;
+        behaviors.push(BehaviorDef {
+            id: raw.id,
+            tree: raw.behavior,
+        });
+    }
+    Ok(behaviors)
+}
+
+async fn load_traits_wasm(dir: &str) -> Result<Vec<TraitDef>, EntityLoadError> {
+    let mut traits = Vec::new();
+    let files = ["hostile.yaml"];
+    for file in files {
+        let path = format!("{}/{}", dir, file);
+        let raw_str = load_string(&path)
+            .await
+            .map_err(|e| EntityLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        let raw: TraitFile = serde_yaml::from_str(&raw_str)?;
+        let mut stats = StatBlock::default();
+        for (key, value) in raw.stats {
+            stats.add(&key, value);
+        }
+        traits.push(TraitDef {
+            id: raw.id,
+            stats,
+            flags: raw.flags,
+            tags: raw.tags,
+        });
+    }
+    Ok(traits)
+}
+
+async fn load_entities_from_dir_wasm(
+    dir: &str,
+    fallback_kind: EntityKind,
+    trait_lookup: &HashMap<String, usize>,
+    behavior_lookup: &HashMap<String, usize>,
+    traits: &[TraitDef],
+    behaviors: &[BehaviorDef],
+    entities: &mut Vec<EntityDef>,
+    entity_lookup: &mut HashMap<String, usize>,
+) -> Result<(), EntityLoadError> {
+    let files: &[&str] = if dir.ends_with("/enemy") {
+        &["virat.yaml"]
+    } else {
+        &[]
+    };
+
+    let kind_from_dir = dir
+        .rsplit('/')
+        .next()
+        .and_then(EntityKind::from_dir)
+        .unwrap_or(fallback_kind);
+
+    for file in files {
+        let path = format!("{}/{}", dir, file);
+        let raw_str = load_string(&path)
+            .await
+            .map_err(|e| EntityLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        let raw: EntityFile = serde_yaml::from_str(&raw_str)?;
+        let kind = raw.kind.unwrap_or(kind_from_dir);
+
+        let mut trait_indices = Vec::with_capacity(raw.traits.len());
+        for id in raw.traits {
+            let idx = trait_lookup
+                .get(&id)
+                .copied()
+                .ok_or_else(|| EntityLoadError::MissingDefinition(format!("trait {id}")))?;
+            trait_indices.push(idx);
+        }
+
+        let mut tags = raw.trait_tags;
+        for &trait_idx in &trait_indices {
+            let trait_def = &traits[trait_idx];
+            for (key, value) in &trait_def.tags {
+                tags.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+
+        let behavior_tree = if let Some(behavior) = raw.behavior {
+            Some(behavior)
+        } else if let Some(id) = raw.behavior_id {
+            let idx = behavior_lookup
+                .get(&id)
+                .copied()
+                .ok_or_else(|| EntityLoadError::MissingDefinition(format!("behavior {id}")))?;
+            Some(behaviors[idx].tree.clone())
+        } else {
+            None
+        };
+
+        let tex = load_texture(&asset_path(&raw.visuals.sprite))
+            .await
+            .map_err(|err| EntityLoadError::Texture(err.to_string()))?;
+        tex.set_filter(FilterMode::Nearest);
+
+        let draw_params = raw.visuals.draw_params.unwrap_or_default();
+        let color = Color::from_rgba(
+            draw_params.color[0],
+            draw_params.color[1],
+            draw_params.color[2],
+            draw_params.color[3],
+        );
+
+        let dest_size = draw_params
+            .dest_size
+            .map(|v| vec2(v[0], v[1]));
+        let pivot = draw_params.pivot.map(|v| vec2(v[0], v[1]));
+
+        let hitbox = Rect::new(
+            -raw.hitbox.w + raw.hitbox.x,
+            -raw.hitbox.h * 1.5 + raw.hitbox.y,
+            raw.hitbox.w,
+            raw.hitbox.h,
+        );
+
+        let mut base_stats = StatBlock::default();
+        for (key, value) in raw.stats {
+            base_stats.add(&key, value);
+        }
+
+        let def = EntityDef {
+            id: raw.id.clone(),
+            name: raw.name.unwrap_or_else(|| raw.id.clone()),
+            kind,
+            texture: TextureInfo {
+                texture: tex,
+                draw: DrawParams {
+                    dest_size,
+                    rotation: draw_params.rotation,
+                    flip_x: draw_params.flip_x,
+                    flip_y: draw_params.flip_y,
+                    pivot,
+                    color,
+                    offset: vec2(draw_params.offset[0], draw_params.offset[1]),
+                },
+            },
+            hitbox,
+            traits: trait_indices,
+            trait_tags: tags,
+            behavior_tree,
+            base_stats,
+            speed: raw.speed,
+            collides: raw.collides.unwrap_or(true),
+        };
+
+        let index = entities.len();
+        entities.push(def);
+        entity_lookup.insert(raw.id, index);
+    }
+
+    Ok(())
 }
 
 async fn load_entities_from_dir(

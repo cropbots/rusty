@@ -1,6 +1,8 @@
 use macroquad::prelude::*;
+use macroquad::file::load_string;
 use serde::Deserialize;
 use std::path::Path;
+use crate::helpers::{asset_path, data_path};
 
 const EMPTY_TILE: u16 = u16::MAX;
 const CHUNK_SIZE: usize = 16;
@@ -20,33 +22,98 @@ impl GridIndex {
     }
 }
 
+#[derive(Deserialize)]
+struct TilesetFile {
+    image: Option<String>,
+    tile_width: u16,
+    tile_height: u16,
+    columns: u16,
+    rows: u16,
+    #[serde(default)]
+    tile_count: Option<u16>,
+    tiles: Vec<TileInfoFile>,
+}
+
+#[derive(Deserialize)]
+struct TileInfoFile {
+    id: u16,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+}
+
 pub struct TileSet {
-    tiles: Vec<Texture2D>,
+    texture: Texture2D,
+    tiles: Vec<Option<Rect>>,
 }
 
 impl TileSet {
-    pub async fn load(dir: &str, count: usize) -> Self {
-        let mut tiles = Vec::with_capacity(count);
-        for i in 0..count {
-            let path = format!("{}/{}.png", dir, i);
-            let tex = match load_texture(&path).await {
-                Ok(tex) => tex,
-                Err(err) => {
-                    eprintln!("Failed to load tile {} ({}): {}", i, path, err);
-                    Texture2D::empty()
-                }
-            };
-            tex.set_filter(FilterMode::Nearest);
-            tiles.push(tex);
+    pub async fn load(tileset_json: &str, texture_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let json_path = asset_path(tileset_json);
+        let texture_path = asset_path(texture_path);
+        let json_content = load_string(&json_path).await?;
+        let parsed: TilesetFile = serde_json::from_str(&json_content)?;
+
+        let has_tiles = !parsed.tiles.is_empty();
+        let tile_count = parsed
+            .tile_count
+            .map(|count| count as usize)
+            .unwrap_or_else(|| parsed.tiles.len().max(1));
+        let mut tiles: Vec<Option<Rect>> = vec![None; tile_count];
+        for tile in parsed.tiles.into_iter() {
+            let idx = tile.id as usize;
+            if idx >= tiles.len() {
+                tiles.resize(idx + 1, None);
+            }
+            tiles[idx] = Some(Rect::new(
+                tile.x as f32,
+                tile.y as f32,
+                tile.width as f32,
+                tile.height as f32,
+            ));
         }
-        Self { tiles }
+
+        if !has_tiles {
+            let columns = parsed.columns.max(1) as usize;
+            let rows = parsed.rows.max(1) as usize;
+            let total = columns * rows;
+            if total > 0 {
+                tiles.resize(total, None);
+                for i in 0..total {
+                    let x = (i % columns) as f32 * parsed.tile_width as f32;
+                    let y = (i / columns) as f32 * parsed.tile_height as f32;
+                    tiles[i] = Some(Rect::new(
+                        x,
+                        y,
+                        parsed.tile_width as f32,
+                        parsed.tile_height as f32,
+                    ));
+                }
+            }
+        }
+
+        let texture = load_texture(&texture_path).await?;
+        texture.set_filter(FilterMode::Nearest);
+
+        if let Some(image) = parsed.image.as_ref() {
+            if !image.is_empty() && image != Path::new(&texture_path).file_name().and_then(|name| name.to_str()).unwrap_or("") {
+                eprintln!("tileset.json image '{}' does not match texture path '{}'", image, texture_path);
+            }
+        }
+
+        Ok(Self { texture, tiles })
     }
 
-    fn get(&self, id: u16) -> Option<&Texture2D> {
+    fn get(&self, id: u16) -> Option<Rect> {
         if id == EMPTY_TILE {
             return None;
         }
-        self.tiles.get(id as usize)
+        self.tiles.get(id as usize).and_then(|rect| *rect)
+    }
+
+    pub fn texture(&self) -> &Texture2D {
+        &self.texture
     }
 
     pub fn count(&self) -> usize {
@@ -765,18 +832,19 @@ impl TileMap {
         for ty in origin_y..max_y {
             for tx in origin_x..max_x {
                 let tile = self.get_tile(layer, tx, ty);
-                let Some(tex) = tileset.get(tile) else {
+                let Some(source) = tileset.get(tile) else {
                     continue;
                 };
 
                 let local_x = (tx - origin_x) as f32 * self.tile_size;
                 let local_y = (ty - origin_y) as f32 * self.tile_size;
                 draw_texture_ex(
-                    tex,
+                    tileset.texture(),
                     local_x,
                     local_y,
                     WHITE,
                     DrawTextureParams {
+                        source: Some(source),
                         dest_size: dest,
                         ..Default::default()
                     },
@@ -1040,12 +1108,45 @@ fn hash_u32(x: u32, y: u32, seed: u32) -> u32 {
     v
 }
 
-pub fn load_structures_from_dir(dir: impl AsRef<Path>) -> Result<Vec<StructureDef>, std::io::Error> {
-    if cfg!(target_arch = "wasm32") {
-        return Ok(Vec::new());
-    }
-    let dir = dir.as_ref();
+pub async fn load_structures_from_dir(dir: impl AsRef<Path>) -> Result<Vec<StructureDef>, std::io::Error> {
     let mut defs = Vec::new();
+
+    if cfg!(target_arch = "wasm32") {
+        let dir = data_path(&dir.as_ref().to_string_lossy());
+        let files = ["tree_plains.json", "bush_plains.json"];
+        for file in files {
+            let path = format!("{}/{}", dir, file);
+            let raw_str = load_string(&path)
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            let raw: StructureFile = serde_json::from_str(&raw_str)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let tile_len = raw.width * raw.height;
+            let mut colliders = raw.colliders.unwrap_or_default();
+            if colliders.len() != tile_len {
+                colliders = vec![false; tile_len];
+            }
+            let structure = Structure::new(
+                raw.width,
+                raw.height,
+                raw.background,
+                raw.foreground,
+                raw.overlay,
+                colliders,
+            );
+
+            defs.push(StructureDef {
+                id: raw.id,
+                structure,
+                frequency: raw.frequency.unwrap_or(0.05),
+                max_per_map: raw.max_per_map.unwrap_or(10),
+                min_distance: raw.min_distance.unwrap_or(64.0),
+            });
+        }
+        return Ok(defs);
+    }
+
+    let dir = dir.as_ref();
     if !dir.exists() {
         return Ok(defs);
     }

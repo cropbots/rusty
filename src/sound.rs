@@ -1,9 +1,10 @@
 use macroquad::audio::{load_sound, play_sound, stop_sound, PlaySoundParams, Sound};
+use macroquad::file::load_string;
 use macroquad::prelude::Vec2;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use crate::helpers::asset_path;
+use crate::helpers::{asset_path, data_path};
 
 #[derive(Debug)]
 pub enum SoundLoadError {
@@ -85,14 +86,39 @@ impl SoundSystem {
     }
 
     pub async fn load_from(dir: impl AsRef<Path>) -> Result<Self, SoundLoadError> {
-        if cfg!(target_arch = "wasm32") {
-            return Ok(Self::empty());
-        }
         let dir = dir.as_ref();
         let mut sounds = Vec::new();
         let mut lookup = HashMap::new();
 
-        if dir.exists() {
+        if cfg!(target_arch = "wasm32") {
+            let dir = data_path(&dir.to_string_lossy());
+            let files = ["footstep.yaml"];
+            for file in files {
+                let path = format!("{}/{}", dir, file);
+                let raw_str = load_string(&path)
+                    .await
+                    .map_err(|err| SoundLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, err.to_string())))?;
+                let raw: SoundFile = serde_yaml::from_str(&raw_str)?;
+                let sound = load_sound(&asset_path(&raw.path))
+                    .await
+                    .map_err(|err| SoundLoadError::Sound(err.to_string()))?;
+
+                let entry = SoundEntry {
+                    id: raw.id.clone(),
+                    channel: raw.channel.unwrap_or(SoundChannel::Sfx),
+                    volume: raw.volume.unwrap_or(1.0),
+                    looped: raw.looped.unwrap_or(false),
+                    pitch: raw.pitch.unwrap_or(1.0),
+                    spatial: raw.spatial.unwrap_or(false),
+                    max_distance: raw.max_distance.unwrap_or(600.0),
+                    min_distance: raw.min_distance.unwrap_or(60.0),
+                    variance: raw.variance.unwrap_or(0.0),
+                };
+
+                lookup.insert(raw.id, sounds.len());
+                sounds.push(LoadedSound { entry, sound });
+            }
+        } else if dir.exists() {
             for entry in std::fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();

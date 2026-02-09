@@ -1,0 +1,12 @@
+{
+  "id": "bush_plains",
+  "width": 1,
+  "height": 1,
+  "background": [0],
+  "foreground": [56],
+  "colliders": [true],
+  "overlay": [0],
+  "frequency": 0.05,
+  "max_per_map": 10000,
+  "min_distance": 0.0
+}

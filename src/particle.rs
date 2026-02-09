@@ -1,8 +1,9 @@
 use macroquad::prelude::*;
+use macroquad::file::load_string;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use crate::helpers::asset_path;
+use crate::helpers::{asset_path, data_path};
 
 #[derive(Debug)]
 pub enum ParticleLoadError {
@@ -329,15 +330,37 @@ impl ParticleSystem {
     }
 
     pub async fn load_from(dir: impl AsRef<Path>) -> Result<Self, ParticleLoadError> {
-        if cfg!(target_arch = "wasm32") {
-            return Ok(Self::empty());
-        }
         let dir = dir.as_ref();
         let mut templates = Vec::new();
         let mut lookup = HashMap::new();
         let mut total_capacity = 0usize;
 
-        if dir.exists() {
+        if cfg!(target_arch = "wasm32") {
+            let dir = data_path(&dir.to_string_lossy());
+            let files = ["trail.yaml", "dash.yaml"];
+            for file in files {
+                let path = format!("{}/{}", dir, file);
+                let raw_str = load_string(&path)
+                    .await
+                    .map_err(|err| ParticleLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, err.to_string())))?;
+                let raw: ParticleConfigFile = serde_yaml::from_str(&raw_str)?;
+                let (config, texture_path) = config_from_file(raw);
+                total_capacity = total_capacity.saturating_add(config.max_particles);
+
+                let texture = if let Some(path) = texture_path {
+                    let tex = load_texture(&asset_path(&path))
+                        .await
+                        .map_err(|err| ParticleLoadError::Texture(err.to_string()))?;
+                    tex.set_filter(FilterMode::Nearest);
+                    Some(tex)
+                } else {
+                    None
+                };
+
+                lookup.insert(config.id.clone(), templates.len());
+                templates.push(ParticleTemplate { config, texture });
+            }
+        } else if dir.exists() {
             for entry in std::fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();

@@ -1,0 +1,19 @@
+id: dust_trail
+max_particles: 8
+spawn_rate: 0
+trail_rate: 12
+burst: 0
+lifetime: 0.4
+lifetime_variance: 0.1
+speed: 15
+speed_variance: 5
+angle: 180
+angle_variance: 180
+gravity: [0, 40]
+damping: 0.9
+size_start: 2.5
+size_end: 0.0
+color_start: [255, 220, 180, 200]
+color_end: [255, 220, 180, 0]
+shape: quad
+inherit_velocity: 0.4
