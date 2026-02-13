@@ -1,5 +1,21 @@
 use macroquad::prelude::*;
 
+pub fn random_u32() -> u32 {
+    macroquad::rand::rand()
+}
+
+pub fn random_f32() -> f32 {
+    let v = random_u32();
+    v as f32 / u32::MAX as f32
+}
+
+pub fn random_range(min: f32, max: f32) -> f32 {
+    if max <= min {
+        return min;
+    }
+    min + (max - min) * random_f32()
+}
+
 pub async fn load_single_texture(dir: &str, name: &str) -> Option<Texture2D> {
     let dir = asset_path(dir);
     let tile_path = format!("{}/{}.png", dir, name);

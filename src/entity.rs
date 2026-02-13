@@ -3,8 +3,10 @@ use macroquad::file::load_string;
 use crate::helpers::{asset_path, data_path};
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::r#trait::*;
 use crate::particle::ParticleEmitter;
@@ -112,7 +114,13 @@ pub enum BehaviorNode {
     Selector { children: Vec<BehaviorNode> },
     Sequence { children: Vec<BehaviorNode> },
     Condition { name: String, value: Option<f32> },
-    Action { name: String },
+    Action {
+        name: String,
+        #[serde(default)]
+        params: MovementParams,
+        #[serde(flatten)]
+        extra: HashMap<String, YamlValue>,
+    },
 }
 
 #[derive(Clone)]
@@ -162,6 +170,10 @@ impl Entity {
         self.instance.draw(db);
     }
 
+    pub fn draw_with_alpha(&self, db: &EntityDatabase, alpha: f32) {
+        self.instance.draw_with_alpha(db, alpha);
+    }
+
     pub fn hitbox(&self, db: &EntityDatabase) -> Rect {
         self.instance.hitbox(db)
     }
@@ -195,6 +207,10 @@ pub struct EntityDef {
 
 impl EntityDef {
     pub fn draw(&self, pos: Vec2) {
+        self.draw_with_alpha(pos, 1.0);
+    }
+
+    pub fn draw_with_alpha(&self, pos: Vec2, alpha: f32) {
         let tex = &self.texture.texture;
         let draw = &self.texture.draw;
 
@@ -207,12 +223,14 @@ impl EntityDef {
             pivot: draw.pivot,
             ..Default::default()
         };
+        let mut color = draw.color;
+        color.a *= alpha.clamp(0.0, 1.0);
 
         draw_texture_ex(
             tex,
             pos.x + draw.offset.x,
             pos.y + draw.offset.y,
-            draw.color,
+            color,
             params,
         );
     }
@@ -244,6 +262,9 @@ pub struct PlayerTarget {
 
 #[derive(Clone, Copy)]
 pub struct EntityTarget {
+    pub id: u64,
+    pub def: usize,
+    pub kind: EntityKind,
     pub pos: Vec2,
     pub hitbox: Rect,
 }
@@ -279,12 +300,15 @@ pub struct DamageEvent {
 }
 
 pub struct EntityInstance {
+    pub uid: u64,
     pub def: usize,
     pub pos: Vec2,
     pub vel: Vec2,
     pub speed: f32,
     pub behaviors: Vec<BehaviorRuntime>,
     pub stats: StatBlock,
+    pub hp: f32,
+    pub max_hp: f32,
     pub collision_scratch: Vec<Rect>,
     pub current_target: Option<Target>,
     pub contact_cooldown: f32,
@@ -307,31 +331,35 @@ impl EntityInstance {
         }
 
         let def = &db.entities[self.def];
-        let desired_action = def
+        let desired = def
             .behavior_tree
             .as_ref()
             .and_then(|tree| select_action(tree, self, ctx))
-            .unwrap_or("idle");
-        let desired_action = if registry.has(desired_action) {
-            desired_action
+            .unwrap_or(SelectedAction {
+                name: "idle",
+                params: MovementParams::new(),
+            });
+        let (desired_action, desired_params) = if registry.has(desired.name) {
+            (desired.name, desired.params)
         } else {
-            "idle"
+            ("idle", MovementParams::new())
         };
 
         if self.behaviors.is_empty() {
             self.behaviors.push(BehaviorRuntime {
                 name: desired_action.to_string(),
                 func: registry.resolve(desired_action),
-                params: MovementParams::new(),
+                params: desired_params.clone(),
                 timer: 0.0,
                 dir: Vec2::ZERO,
                 cooldown: 0.0,
             });
         }
         if let Some(behavior) = self.behaviors.first_mut() {
-            if behavior.name != desired_action {
+            if behavior.name != desired_action || behavior.params != desired_params {
                 behavior.name = desired_action.to_string();
                 behavior.func = registry.resolve(desired_action);
+                behavior.params = desired_params.clone();
                 behavior.timer = 0.0;
                 behavior.dir = Vec2::ZERO;
                 behavior.cooldown = 0.0;
@@ -401,6 +429,10 @@ impl EntityInstance {
         db.entities[self.def].draw(self.pos);
     }
 
+    pub fn draw_with_alpha(&self, db: &EntityDatabase, alpha: f32) {
+        db.entities[self.def].draw_with_alpha(self.pos, alpha);
+    }
+
     pub fn hitbox(&self, db: &EntityDatabase) -> Rect {
         db.entities[self.def].world_hitbox(self.pos)
     }
@@ -408,7 +440,10 @@ impl EntityInstance {
     pub fn is_dashing(&self) -> bool {
         self.behaviors
             .first()
-            .map(|behavior| behavior.name == "dash_at_target" && behavior.timer > 0.0)
+            .map(|behavior| {
+                (behavior.name == "dash_at_target" || behavior.name == "virabird_ai")
+                    && behavior.timer > 0.0
+            })
             .unwrap_or(false)
     }
 
@@ -447,6 +482,7 @@ impl MovementRegistry {
         registry.register("seek", movement_seek);
         registry.register("flee", movement_flee);
         registry.register("dash_at_target", movement_dash_at_target);
+        registry.register("virabird_ai", movement_virabird_ai);
         registry
     }
 
@@ -469,6 +505,8 @@ impl MovementRegistry {
 pub struct EntityContext {
     pub player: Option<PlayerTarget>,
     pub target: Option<Target>,
+    pub entities: Vec<EntityTarget>,
+    pub target_cache: RefCell<HashMap<(u64, u8), Option<EntityTarget>>>,
     pub view_height: f32,
     pub damage_events: Vec<DamageEvent>,
 }
@@ -481,7 +519,47 @@ impl EntityContext {
         if entity_has_trait_flag(db, entity.def, "target_player") {
             return self.player.map(Target::Player);
         }
-        None
+
+        let target_any = entity_has_trait_flag(db, entity.def, "target_nearest_entity");
+        let target_enemy = entity_has_trait_flag(db, entity.def, "target_nearest_enemy");
+        let target_friend = entity_has_trait_flag(db, entity.def, "target_nearest_friend");
+        let target_misc = entity_has_trait_flag(db, entity.def, "target_nearest_misc");
+        let mask = (target_any as u8)
+            | ((target_enemy as u8) << 1)
+            | ((target_friend as u8) << 2)
+            | ((target_misc as u8) << 3);
+
+        if mask == 0 {
+            return None;
+        }
+        if let Some(cached) = self.target_cache.borrow().get(&(entity.uid, mask)).copied() {
+            return cached.map(Target::Entity);
+        }
+
+        let mut best: Option<(f32, EntityTarget)> = None;
+        for candidate in &self.entities {
+            if candidate.id == entity.uid {
+                continue;
+            }
+            let kind_ok = match candidate.kind {
+                EntityKind::Enemy => target_any || target_enemy,
+                EntityKind::Friend => target_any || target_friend,
+                EntityKind::Misc => target_any || target_misc,
+            };
+            if !kind_ok {
+                continue;
+            }
+            let dist_sq = entity.pos.distance_squared(candidate.pos);
+            match best {
+                Some((best_dist, _)) if dist_sq >= best_dist => {}
+                _ => best = Some((dist_sq, *candidate)),
+            }
+        }
+        let resolved = best.map(|(_, target)| target);
+        self.target_cache
+            .borrow_mut()
+            .insert((entity.uid, mask), resolved);
+        resolved.map(Target::Entity)
     }
 }
 
@@ -623,6 +701,7 @@ impl EntityDatabase {
         for &trait_idx in &def.traits {
             stats.merge(&self.traits[trait_idx].stats);
         }
+        let max_hp = stats.get("hp", 1.0).max(1.0);
 
         let mut behaviors = Vec::new();
         let mut action = def
@@ -645,18 +724,36 @@ impl EntityDatabase {
         });
 
         Some(EntityInstance {
+            uid: next_entity_id(),
             def: index,
             pos,
             vel: Vec2::ZERO,
             speed: def.speed,
             behaviors,
             stats,
+            hp: max_hp,
+            max_hp,
             collision_scratch: Vec::with_capacity(25),
             current_target: None,
             contact_cooldown: 0.0,
             dash_trail: None,
         })
     }
+}
+
+impl EntityInstance {
+    pub fn apply_damage(&mut self, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        self.hp = (self.hp - amount).max(0.0);
+    }
+}
+
+static ENTITY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_entity_id() -> u64 {
+    ENTITY_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 fn collision_radius(map: &crate::map::TileMap, vel: Vec2, dt: f32) -> i32 {
@@ -675,11 +772,30 @@ fn entity_has_trait_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> boo
     })
 }
 
+struct SelectedAction<'a> {
+    name: &'a str,
+    params: MovementParams,
+}
+
+fn action_params(params: &MovementParams, extra: &HashMap<String, YamlValue>) -> MovementParams {
+    let mut merged = params.clone();
+    for (key, value) in extra {
+        if let Some(v) = value.as_f64() {
+            merged.insert(key.clone(), v as f32);
+        }
+    }
+    // Backward-compat for existing YAML using `cooldown` on dash actions.
+    if let Some(v) = merged.get("cooldown").copied() {
+        merged.entry("dash_cooldown".to_string()).or_insert(v);
+    }
+    merged
+}
+
 fn select_action<'a>(
     node: &'a BehaviorNode,
     entity: &EntityInstance,
     ctx: &EntityContext,
-) -> Option<&'a str> {
+) -> Option<SelectedAction<'a>> {
     let (action, ok) = eval_behavior(node, entity, ctx);
     if ok {
         action
@@ -692,9 +808,15 @@ fn eval_behavior<'a>(
     node: &'a BehaviorNode,
     entity: &EntityInstance,
     ctx: &EntityContext,
-) -> (Option<&'a str>, bool) {
+) -> (Option<SelectedAction<'a>>, bool) {
     match node {
-        BehaviorNode::Action { name } => (Some(name.as_str()), true),
+        BehaviorNode::Action { name, params, extra } => (
+            Some(SelectedAction {
+                name: name.as_str(),
+                params: action_params(params, extra),
+            }),
+            true,
+        ),
         BehaviorNode::Condition { name, value } => (None, eval_condition(name, *value, entity, ctx)),
         BehaviorNode::Sequence { children } => {
             let mut action = None;
@@ -739,7 +861,7 @@ fn first_action_with_registry<'a>(
     registry: &MovementRegistry,
 ) -> Option<&'a str> {
     match node {
-        BehaviorNode::Action { name } => {
+        BehaviorNode::Action { name, .. } => {
             if registry.has(name) {
                 Some(name.as_str())
             } else {
@@ -888,7 +1010,7 @@ async fn load_entities_from_dir_wasm(
     entity_lookup: &mut HashMap<String, usize>,
 ) -> Result<(), EntityLoadError> {
     let files: &[&str] = if dir.ends_with("/enemy") {
-        &["virat.yaml"]
+        &["virat.yaml", "virabird.yaml"]
     } else {
         &[]
     };

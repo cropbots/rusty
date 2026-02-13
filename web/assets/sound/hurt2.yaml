@@ -1,0 +1,6 @@
+id: hurt2
+path: "src/assets/sounds/hurt2.wav"
+channel: sfx
+volume: 0.6
+looped: false
+spatial: false

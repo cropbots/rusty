@@ -1,6 +1,7 @@
 use macroquad::prelude::*;
 use miniquad::conf::{Icon, Platform};
 use image::imageops::FilterType;
+use std::collections::HashMap;
 use std::future::poll_fn;
 use std::task::Poll;
 
@@ -25,9 +26,11 @@ const TILE_SIZE: f32 = 16.0;
 const MOVE_DEADZONE: f32 = 16.0;
 const FOOTSTEP_INTERVAL: f32 = 0.2;
 const CAMERA_FOV: f32 = 300.0;
+const ENTITY_CULL_FADE_PAD: f32 = 96.0;
 const LOADING_SPIN_SPEED: f32 = 3.0;
-const CHUNK_ALLOC_TIME_BUDGET_S: f32 = 0.0025;
-const STRUCTURE_APPLY_TIME_BUDGET_S: f32 = 0.0025;
+const STRUCTURE_APPLY_TIME_BUDGET_S: f32 = 0.005;
+const CHUNK_ALLOC_PER_FRAME: usize = 6;
+const CHUNK_REBUILD_PER_FRAME: usize = 8;
 
 fn window_conf() -> Conf {
     let icon = load_window_icon(&helpers::asset_path("src/assets/favicon.png"));
@@ -152,11 +155,8 @@ async fn main() {
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.22, loading_spin).await;
     let mut maps = TileMap::new_deferred(512, 512, TILE_SIZE, Vec2::new(TILE_SIZE, TILE_SIZE), 0.0);
-    while !maps.allocate_chunks_step(CHUNK_ALLOC_TIME_BUDGET_S) {
-        loading_spin += LOADING_SPIN_SPEED * get_frame_time();
-        show_loading(&loading, "Allocating map", maps.allocate_chunks_progress() * 0.25 + 0.22, loading_spin).await;
-    }
-    let grass = if tileset.count() > 24 { 24 } else { 0 };
+    maps.set_chunk_work_budget(CHUNK_ALLOC_PER_FRAME, CHUNK_REBUILD_PER_FRAME);
+    let grass: u8 = if tileset.count() > 24 { 24 } else { 0 };
     maps.fill_layer(LayerKind::Background, grass);
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.35, loading_spin).await;
@@ -201,6 +201,17 @@ async fn main() {
         player_texture,
         Rect::new(-6.5 / 2.0, -8.0, 6.5, 8.0),
     );
+    loading_spin += LOADING_SPIN_SPEED * get_frame_time();
+    show_loading(&loading, "Loading", 0.68, loading_spin).await;
+
+    let heart_full = load_texture(&helpers::asset_path("src/assets/ui/heart.png"))
+        .await
+        .unwrap_or_else(|_| Texture2D::empty());
+    let heart_empty = load_texture(&helpers::asset_path("src/assets/ui/heart-empty.png"))
+        .await
+        .unwrap_or_else(|_| Texture2D::empty());
+    heart_full.set_filter(FilterMode::Nearest);
+    heart_empty.set_filter(FilterMode::Nearest);
 
     // Camera
     let mut camera = Camera2D {
@@ -242,8 +253,21 @@ async fn main() {
     show_loading(&loading, "Loading", 0.75, loading_spin).await;
 
     let mut entities = Vec::<Entity>::new();
-    for _ in 0..10 {
-        if let Some(virat) = Entity::spawn(&db, "virat", vec2(100.0, 100.0), &registry) {
+    for _ in 0..2 {
+        let pos = vec2(
+            helpers::random_range(0.0, 100.0),
+            helpers::random_range(0.0, 100.0),
+        );
+        if let Some(virat) = Entity::spawn(&db, "virabird", pos, &registry) {
+            entities.push(virat);
+        }
+    }
+    for _ in 0..3 {
+        let pos = vec2(
+            helpers::random_range(0.0, 100.0),
+            helpers::random_range(0.0, 100.0),
+        );
+        if let Some(virat) = Entity::spawn(&db, "virat", pos, &registry) {
             entities.push(virat);
         }
     }
@@ -271,7 +295,7 @@ async fn main() {
     let sounds = await_with_loading(
         SoundSystem::load_from("src/sound"),
         &loading,
-        "Loading",
+        "Loading sounds",
         0.9,
         &mut loading_spin,
     )
@@ -285,6 +309,7 @@ async fn main() {
 
     let mut footstep_timer = 0.0f32;
     let mut damage_events: Vec<DamageEvent> = Vec::new();
+    let mut player_dead = false;
     
     loop {
         let dt = get_frame_time();
@@ -300,7 +325,9 @@ async fn main() {
             }
         }
         
-        player.update(&maps);
+        if !player_dead {
+            player.update(&maps);
+        }
         
         let particle_budget = particle_budget_scale(
             screen_width(),
@@ -317,18 +344,37 @@ async fn main() {
         } else {
             None
         };
+        maps.begin_frame_chunk_work();
+        maps.prewarm_visible_chunks(camera.target, camera.zoom);
 
         let view_rect = camera_view_rect_logic(camera.target, CAMERA_FOV);
         let sim_rect = scale_rect(view_rect, 2.0);
-        let delete_rect = scale_rect(view_rect, 4.0);
+
+        let mut entity_targets = Vec::with_capacity(entities.len());
+        for ent in &entities {
+            let def = &db.entities[ent.instance.def];
+            entity_targets.push(entity::EntityTarget {
+                id: ent.instance.uid,
+                def: ent.instance.def,
+                kind: def.kind,
+                pos: ent.instance.pos,
+                hitbox: ent.hitbox(&db),
+            });
+        }
 
         damage_events.clear();
         let mut ctx = EntityContext {
-            player: Some(PlayerTarget {
-                pos: player.position(),
-                hitbox: player.world_hitbox(),
-            }),
+            player: if player_dead {
+                None
+            } else {
+                Some(PlayerTarget {
+                    pos: player.position(),
+                    hitbox: player.world_hitbox(),
+                })
+            },
             target: None,
+            entities: entity_targets,
+            target_cache: std::cell::RefCell::new(HashMap::new()),
             view_height: CAMERA_FOV,
             damage_events: Vec::new(),
         };
@@ -336,11 +382,6 @@ async fn main() {
         let mut ent_idx = 0usize;
         while ent_idx < entities.len() {
             let hb = entities[ent_idx].hitbox(&db);
-            if !hb.overlaps(&delete_rect) {
-                entities.swap_remove(ent_idx);
-                continue;
-            }
-
             if hb.overlaps(&sim_rect) {
                 entities[ent_idx].update(dt, &db, &mut ctx, &maps, &registry);
                 entities[ent_idx].clamp_to_map(&maps, &db);
@@ -375,15 +416,38 @@ async fn main() {
             }
         }
 
-        for event in &damage_events {
-            match event.target {
-                Target::Player(_) => player.apply_damage(event.amount),
-                Target::Entity(_) | Target::Position(_) => {}
-            }
+        let mut entity_index_by_uid = HashMap::with_capacity(entities.len());
+        for (idx, ent) in entities.iter().enumerate() {
+            entity_index_by_uid.insert(ent.instance.uid, idx);
         }
 
-        let dashing = player.is_dashing();
-        let moving = player.is_moving(MOVE_DEADZONE) && !dashing;
+        for event in &damage_events {
+            match event.target {
+                Target::Player(_) => {
+                    if event.amount > 0.0 {
+                        sounds.play("hurt2");
+                    }
+                    player.apply_damage(event.amount);
+                }
+                Target::Entity(target) => {
+                    if let Some(&ent_idx) = entity_index_by_uid.get(&target.id) {
+                        let ent = &mut entities[ent_idx];
+                        if event.amount > 0.0 {
+                            sounds.play("hurt");
+                        }
+                        ent.instance.apply_damage(event.amount);
+                    }
+                }
+                Target::Position(_) => {}
+            }
+        }
+        entities.retain(|ent| ent.instance.hp > 0.0);
+        if !player_dead && player.hp() <= 0.0 {
+            player_dead = true;
+        }
+
+        let dashing = !player_dead && player.is_dashing();
+        let moving = !player_dead && player.is_moving(MOVE_DEADZONE) && !dashing;
         if let Some(emitter) = walk_trail.as_mut() {
             if moving {
                 particles.update_emitter(emitter, player.position(), dt);
@@ -438,21 +502,31 @@ async fn main() {
             screen_height(),
         );
 
-        let cull_rect = expand_rect(view_rect, 64.0);
+        let cull_rect = expand_rect(view_rect, ENTITY_CULL_FADE_PAD);
 
         particles.draw_in_rect(cull_rect);
 
-        player.draw();
+        if !player_dead {
+            player.draw();
+        }
         if !entities.is_empty() {
             draw_order.clear();
-            draw_order.extend(0..entities.len());
-            draw_order.sort_unstable_by_key(|&idx| entities[idx].instance.def);
-            for &idx in &draw_order {
-                let ent = &entities[idx];
+            for (idx, ent) in entities.iter().enumerate() {
                 let hb = ent.hitbox(&db);
-                if hb.overlaps(&cull_rect) {
-                    ent.draw(&db);
+                if offscreen_fade_alpha(hb, view_rect, ENTITY_CULL_FADE_PAD) > 0.0 {
+                    draw_order.push(idx);
                 }
+            }
+            if draw_order.len() > 1 {
+                draw_order.sort_unstable_by_key(|&idx| entities[idx].instance.def);
+            }
+            for &idx in &draw_order {
+                let alpha = offscreen_fade_alpha(
+                    entities[idx].hitbox(&db),
+                    view_rect,
+                    ENTITY_CULL_FADE_PAD,
+                );
+                entities[idx].draw_with_alpha(&db, alpha);
             }
         }
 
@@ -478,6 +552,14 @@ async fn main() {
                 },
             );
         }
+
+        draw_player_health(
+            player.hp(),
+            player.max_hp(),
+            CAMERA_FOV,
+            &heart_full,
+            &heart_empty,
+        );
 
         i += get_frame_time();
         if i >= 1.0 {
@@ -541,7 +623,83 @@ fn create_scene_target(scale: f32, screen_w: f32, screen_h: f32) -> RenderTarget
 }
 
 fn particle_budget_scale(screen_w: f32, screen_h: f32, render_scale: f32) -> f32 {
-    let base_area = 1920.0 * 1080.0;
+    let base_area = 500.0 * 500.0;
     let area = (screen_w * screen_h * render_scale * render_scale).max(1.0);
     (base_area / area).clamp(0.35, 1.0)
+}
+
+fn offscreen_fade_alpha(hitbox: Rect, view_rect: Rect, fade_pad: f32) -> f32 {
+    if hitbox.overlaps(&view_rect) {
+        return 1.0;
+    }
+    let expanded = expand_rect(view_rect, fade_pad.max(1.0));
+    if !hitbox.overlaps(&expanded) {
+        return 0.0;
+    }
+
+    let cx = hitbox.x + hitbox.w * 0.5;
+    let cy = hitbox.y + hitbox.h * 0.5;
+    let nearest_x = cx.clamp(view_rect.x, view_rect.x + view_rect.w);
+    let nearest_y = cy.clamp(view_rect.y, view_rect.y + view_rect.h);
+    let distance = vec2(cx - nearest_x, cy - nearest_y).length();
+    (1.0 - distance / fade_pad.max(1.0)).clamp(0.0, 1.0)
+}
+
+fn draw_player_health(
+    hp: f32,
+    max_hp: f32,
+    view_height: f32,
+    heart_full: &Texture2D,
+    heart_empty: &Texture2D,
+) {
+    if max_hp <= 0.0 {
+        return;
+    }
+    let hp_per_heart = 1.0;
+    let padding = 8.0;
+    let base_fov = 300.0;
+    let fov_scale = (base_fov / view_height.max(1.0)).clamp(0.7, 1.35);
+    let scale = fov_scale;
+
+    let heart_w = heart_full.width() * scale;
+    let heart_h = heart_full.height() * scale;
+    if heart_w <= 0.0 || heart_h <= 0.0 {
+        return;
+    }
+    // Terraria-style overlap: sprite has padding, so compress spacing hard.
+    let step_x = (heart_w * 0.4).max(1.0);
+    let step_y = (heart_h * 0.4).max(1.0);
+
+    let total_hearts = (max_hp / hp_per_heart).ceil().max(1.0) as i32;
+    let full_hearts = (hp / hp_per_heart).floor().max(0.0) as i32;
+    let hearts_per_row = 10;
+    let rows = ((total_hearts + hearts_per_row - 1) / hearts_per_row) as i32;
+
+    for row in 0..rows {
+        let row_start = row * hearts_per_row;
+        let row_count = (total_hearts - row_start).min(hearts_per_row);
+        let row_width = heart_w + (row_count as f32 - 1.0) * step_x;
+        let start_x = screen_width() - padding - row_width;
+        let y = padding + row as f32 * step_y;
+
+        for i in 0..row_count {
+            let idx = row_start + i;
+            let tex = if idx < full_hearts {
+                heart_full
+            } else {
+                heart_empty
+            };
+            let x = start_x + i as f32 * step_x;
+            draw_texture_ex(
+                tex,
+                x,
+                y,
+                WHITE,
+                DrawTextureParams {
+                    dest_size: Some(vec2(heart_w, heart_h)),
+                    ..Default::default()
+                },
+            );
+        }
+    }
 }

@@ -15,10 +15,12 @@ pub struct Player {
     dash_dir: Vec2,
     collision_scratch: Vec<Rect>,
     hp: f32,
+    max_hp: f32,
 }
 
 impl Player {
     pub fn new(pos: Vec2, texture: Texture2D, hitbox: Rect) -> Self {
+        let max_hp = 30.0;
         Self {
             pos,
             vel: Vec2::ZERO,
@@ -30,7 +32,8 @@ impl Player {
             dash_cooldown: 0.0,
             dash_dir: Vec2::ZERO,
             collision_scratch: Vec::with_capacity(25),
-            hp: 100.0,
+            hp: max_hp,
+            max_hp,
         }
     }
 
@@ -183,6 +186,37 @@ impl Player {
             return;
         }
         self.hp = (self.hp - amount).max(0.0);
+    }
+
+    pub fn heal(&mut self, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        self.hp = (self.hp + amount).min(self.max_hp);
+    }
+
+    pub fn set_max_hp(&mut self, max_hp: f32) {
+        let clamped = max_hp.max(1.0);
+        self.max_hp = clamped;
+        if self.hp > self.max_hp {
+            self.hp = self.max_hp;
+        }
+    }
+
+    pub fn add_max_hp(&mut self, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        let new_max = (self.max_hp + amount).max(1.0);
+        self.max_hp = new_max;
+    }
+
+    pub fn hp(&self) -> f32 {
+        self.hp
+    }
+
+    pub fn max_hp(&self) -> f32 {
+        self.max_hp
     }
 
     pub fn velocity(&self) -> Vec2 {

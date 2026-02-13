@@ -1,10 +1,9 @@
 use macroquad::audio::{load_sound, play_sound, stop_sound, PlaySoundParams, Sound};
-use macroquad::file::load_string;
 use macroquad::prelude::Vec2;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use crate::helpers::{asset_path, data_path};
+use crate::helpers::asset_path;
 
 #[derive(Debug)]
 pub enum SoundLoadError {
@@ -65,6 +64,59 @@ struct LoadedSound {
     sound: Sound,
 }
 
+#[derive(Clone, Copy)]
+struct BuiltinSoundDef {
+    id: &'static str,
+    path: &'static str,
+    channel: SoundChannel,
+    volume: f32,
+    looped: bool,
+    spatial: bool,
+    pitch: f32,
+    max_distance: f32,
+    min_distance: f32,
+    variance: f32,
+}
+
+const WASM_BUILTIN_SOUNDS: &[BuiltinSoundDef] = &[
+    BuiltinSoundDef {
+        id: "footstep",
+        path: "src/assets/sounds/grass.wav",
+        channel: SoundChannel::Sfx,
+        volume: 0.5,
+        looped: false,
+        spatial: false,
+        pitch: 1.0,
+        max_distance: 600.0,
+        min_distance: 60.0,
+        variance: 0.0,
+    },
+    BuiltinSoundDef {
+        id: "hurt",
+        path: "src/assets/sounds/hurt.wav",
+        channel: SoundChannel::Sfx,
+        volume: 0.6,
+        looped: false,
+        spatial: false,
+        pitch: 1.0,
+        max_distance: 600.0,
+        min_distance: 60.0,
+        variance: 0.0,
+    },
+    BuiltinSoundDef {
+        id: "hurt2",
+        path: "src/assets/sounds/hurt2.wav",
+        channel: SoundChannel::Sfx,
+        volume: 0.6,
+        looped: false,
+        spatial: false,
+        pitch: 1.0,
+        max_distance: 600.0,
+        min_distance: 60.0,
+        variance: 0.0,
+    },
+];
+
 pub struct SoundSystem {
     sounds: Vec<LoadedSound>,
     lookup: HashMap<String, usize>,
@@ -91,31 +143,24 @@ impl SoundSystem {
         let mut lookup = HashMap::new();
 
         if cfg!(target_arch = "wasm32") {
-            let dir = data_path(&dir.to_string_lossy());
-            let files = ["footstep.yaml"];
-            for file in files {
-                let path = format!("{}/{}", dir, file);
-                let raw_str = load_string(&path)
-                    .await
-                    .map_err(|err| SoundLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, err.to_string())))?;
-                let raw: SoundFile = serde_yaml::from_str(&raw_str)?;
-                let sound = load_sound(&asset_path(&raw.path))
+            for def in WASM_BUILTIN_SOUNDS {
+                let sound = load_sound(&asset_path(def.path))
                     .await
                     .map_err(|err| SoundLoadError::Sound(err.to_string()))?;
 
                 let entry = SoundEntry {
-                    id: raw.id.clone(),
-                    channel: raw.channel.unwrap_or(SoundChannel::Sfx),
-                    volume: raw.volume.unwrap_or(1.0),
-                    looped: raw.looped.unwrap_or(false),
-                    pitch: raw.pitch.unwrap_or(1.0),
-                    spatial: raw.spatial.unwrap_or(false),
-                    max_distance: raw.max_distance.unwrap_or(600.0),
-                    min_distance: raw.min_distance.unwrap_or(60.0),
-                    variance: raw.variance.unwrap_or(0.0),
+                    id: def.id.to_string(),
+                    channel: def.channel,
+                    volume: def.volume,
+                    looped: def.looped,
+                    pitch: def.pitch,
+                    spatial: def.spatial,
+                    max_distance: def.max_distance,
+                    min_distance: def.min_distance,
+                    variance: def.variance,
                 };
 
-                lookup.insert(raw.id, sounds.len());
+                lookup.insert(def.id.to_string(), sounds.len());
                 sounds.push(LoadedSound { entry, sound });
             }
         } else if dir.exists() {
