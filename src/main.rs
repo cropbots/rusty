@@ -309,6 +309,7 @@ async fn main() {
 
     let mut footstep_timer = 0.0f32;
     let mut damage_events: Vec<DamageEvent> = Vec::new();
+    let mut entity_target_cache: HashMap<(u64, u8), Option<entity::EntityTarget>> = HashMap::new();
     let mut player_dead = false;
     
     loop {
@@ -374,7 +375,7 @@ async fn main() {
             },
             target: None,
             entities: entity_targets,
-            target_cache: std::cell::RefCell::new(HashMap::new()),
+            target_cache: std::mem::take(&mut entity_target_cache),
             view_height: CAMERA_FOV,
             damage_events: Vec::new(),
         };
@@ -390,6 +391,7 @@ async fn main() {
         }
         resolve_entity_overlaps(&mut entities, &db, &maps);
         damage_events.extend(ctx.damage_events.drain(..));
+        entity_target_cache = std::mem::take(&mut ctx.target_cache);
 
         for ent in entities.iter_mut() {
             let def = &db.entities[ent.instance.def];
@@ -761,8 +763,10 @@ fn rect_cell_range(rect: Rect, cell_size: f32) -> (i32, i32, i32, i32) {
 }
 
 fn entities_should_collide(db: &EntityDatabase, a_def_idx: usize, b_def_idx: usize) -> bool {
-    if entity_has_flag(db, a_def_idx, "no_entity_collision")
-        || entity_has_flag(db, b_def_idx, "no_entity_collision")
+    let a_flags = db.entities[a_def_idx].flags;
+    let b_flags = db.entities[b_def_idx].flags;
+    if (a_flags & entity::DEF_FLAG_NO_ENTITY_COLLISION) != 0
+        || (b_flags & entity::DEF_FLAG_NO_ENTITY_COLLISION) != 0
     {
         return false;
     }
@@ -773,20 +777,12 @@ fn entities_should_collide(db: &EntityDatabase, a_def_idx: usize, b_def_idx: usi
 }
 
 fn blocks_kind(db: &EntityDatabase, def_idx: usize, kind: entity::EntityKind) -> bool {
+    let flags = db.entities[def_idx].flags;
     match kind {
-        entity::EntityKind::Enemy => entity_has_flag(db, def_idx, "no_enemy_collision"),
-        entity::EntityKind::Friend => entity_has_flag(db, def_idx, "no_friend_collision"),
-        entity::EntityKind::Misc => entity_has_flag(db, def_idx, "no_misc_collision"),
+        entity::EntityKind::Enemy => (flags & entity::DEF_FLAG_NO_ENEMY_COLLISION) != 0,
+        entity::EntityKind::Friend => (flags & entity::DEF_FLAG_NO_FRIEND_COLLISION) != 0,
+        entity::EntityKind::Misc => (flags & entity::DEF_FLAG_NO_MISC_COLLISION) != 0,
     }
-}
-
-fn entity_has_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> bool {
-    db.entities[def_idx].traits.iter().any(|&trait_idx| {
-        db.traits
-            .get(trait_idx)
-            .map(|tr| tr.flags.iter().any(|f| f == flag))
-            .unwrap_or(false)
-    })
 }
 
 fn draw_player_health(

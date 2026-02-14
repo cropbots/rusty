@@ -3,7 +3,6 @@ use macroquad::file::load_string;
 use crate::helpers::{asset_path, data_path};
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,6 +60,17 @@ pub enum EntityKind {
     Friend,
     Misc,
 }
+
+pub const DEF_FLAG_TARGET_PLAYER: u16 = 1 << 0;
+pub const DEF_FLAG_TARGET_NEAREST_ENTITY: u16 = 1 << 1;
+pub const DEF_FLAG_TARGET_NEAREST_ENEMY: u16 = 1 << 2;
+pub const DEF_FLAG_TARGET_NEAREST_FRIEND: u16 = 1 << 3;
+pub const DEF_FLAG_TARGET_NEAREST_MISC: u16 = 1 << 4;
+pub const DEF_FLAG_NO_ENTITY_COLLISION: u16 = 1 << 5;
+pub const DEF_FLAG_NO_ENEMY_COLLISION: u16 = 1 << 6;
+pub const DEF_FLAG_NO_FRIEND_COLLISION: u16 = 1 << 7;
+pub const DEF_FLAG_NO_MISC_COLLISION: u16 = 1 << 8;
+pub const DEF_FLAG_NO_PLAYER_COLLISION: u16 = 1 << 9;
 
 impl EntityKind {
     fn from_dir(name: &str) -> Option<Self> {
@@ -203,9 +213,14 @@ pub struct EntityDef {
     pub base_stats: StatBlock,
     pub speed: f32,
     pub collides: bool,
+    pub flags: u16,
 }
 
 impl EntityDef {
+    pub fn has_flag(&self, bit: u16) -> bool {
+        (self.flags & bit) != 0
+    }
+
     pub fn draw(&self, pos: Vec2) {
         self.draw_with_alpha(pos, 1.0);
     }
@@ -395,8 +410,7 @@ impl EntityInstance {
         let def = &db.entities[self.def];
         self.dynamic_collision_scratch.clear();
         collect_dynamic_collision_hitboxes(
-            db,
-            self.def,
+            def.flags,
             self.uid,
             self.current_target,
             ctx,
@@ -542,24 +556,26 @@ pub struct EntityContext {
     pub player: Option<PlayerTarget>,
     pub target: Option<Target>,
     pub entities: Vec<EntityTarget>,
-    pub target_cache: RefCell<HashMap<(u64, u8), Option<EntityTarget>>>,
+    pub target_cache: HashMap<(u64, u8), Option<EntityTarget>>,
     pub view_height: f32,
     pub damage_events: Vec<DamageEvent>,
 }
 
 impl EntityContext {
-    fn resolve_target(&self, db: &EntityDatabase, entity: &EntityInstance) -> Option<Target> {
+    fn resolve_target(&mut self, db: &EntityDatabase, entity: &EntityInstance) -> Option<Target> {
         if let Some(target) = self.target {
             return Some(target);
         }
-        if entity_has_trait_flag(db, entity.def, "target_player") {
+        let def_flags = db.entities[entity.def].flags;
+        let target_player = (def_flags & DEF_FLAG_TARGET_PLAYER) != 0;
+        if target_player {
             return self.player.map(Target::Player);
         }
 
-        let target_any = entity_has_trait_flag(db, entity.def, "target_nearest_entity");
-        let target_enemy = entity_has_trait_flag(db, entity.def, "target_nearest_enemy");
-        let target_friend = entity_has_trait_flag(db, entity.def, "target_nearest_friend");
-        let target_misc = entity_has_trait_flag(db, entity.def, "target_nearest_misc");
+        let target_any = (def_flags & DEF_FLAG_TARGET_NEAREST_ENTITY) != 0;
+        let target_enemy = (def_flags & DEF_FLAG_TARGET_NEAREST_ENEMY) != 0;
+        let target_friend = (def_flags & DEF_FLAG_TARGET_NEAREST_FRIEND) != 0;
+        let target_misc = (def_flags & DEF_FLAG_TARGET_NEAREST_MISC) != 0;
         let mask = (target_any as u8)
             | ((target_enemy as u8) << 1)
             | ((target_friend as u8) << 2)
@@ -568,7 +584,7 @@ impl EntityContext {
         if mask == 0 {
             return None;
         }
-        if let Some(cached) = self.target_cache.borrow().get(&(entity.uid, mask)).copied() {
+        if let Some(cached) = self.target_cache.get(&(entity.uid, mask)).copied() {
             return cached.map(Target::Entity);
         }
 
@@ -592,9 +608,7 @@ impl EntityContext {
             }
         }
         let resolved = best.map(|(_, target)| target);
-        self.target_cache
-            .borrow_mut()
-            .insert((entity.uid, mask), resolved);
+        self.target_cache.insert((entity.uid, mask), resolved);
         resolved.map(Target::Entity)
     }
 }
@@ -806,33 +820,22 @@ fn hitbox_center_world(pos: Vec2, hitbox: Rect) -> Vec2 {
     )
 }
 
-fn entity_has_trait_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> bool {
-    let def = &db.entities[def_idx];
-    def.traits.iter().any(|&trait_idx| {
-        db.traits
-            .get(trait_idx)
-            .map(|def| def.flags.iter().any(|f| f == flag))
-            .unwrap_or(false)
-    })
-}
-
 fn collect_dynamic_collision_hitboxes(
-    db: &EntityDatabase,
-    entity_def: usize,
+    entity_flags: u16,
     entity_uid: u64,
     current_target: Option<Target>,
     ctx: &EntityContext,
     out: &mut Vec<Rect>,
 ) {
     out.clear();
-    if entity_has_trait_flag(db, entity_def, "no_entity_collision") {
+    if (entity_flags & DEF_FLAG_NO_ENTITY_COLLISION) != 0 {
         return;
     }
 
-    let no_enemy_collision = entity_has_trait_flag(db, entity_def, "no_enemy_collision");
-    let no_friend_collision = entity_has_trait_flag(db, entity_def, "no_friend_collision");
-    let no_misc_collision = entity_has_trait_flag(db, entity_def, "no_misc_collision");
-    let no_player_collision = entity_has_trait_flag(db, entity_def, "no_player_collision");
+    let no_enemy_collision = (entity_flags & DEF_FLAG_NO_ENEMY_COLLISION) != 0;
+    let no_friend_collision = (entity_flags & DEF_FLAG_NO_FRIEND_COLLISION) != 0;
+    let no_misc_collision = (entity_flags & DEF_FLAG_NO_MISC_COLLISION) != 0;
+    let no_player_collision = (entity_flags & DEF_FLAG_NO_PLAYER_COLLISION) != 0;
     let target_entity_id = match current_target {
         Some(Target::Entity(target)) => Some(target.id),
         _ => None,
@@ -996,6 +999,43 @@ fn trait_indices_have_flag(trait_indices: &[usize], traits: &[TraitDef], flag: &
             .map(|def| def.flags.iter().any(|f| f == flag))
             .unwrap_or(false)
     })
+}
+
+fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef]) -> u16 {
+    let mut flags = 0u16;
+
+    if trait_indices_have_flag(trait_indices, traits, "target_player") {
+        flags |= DEF_FLAG_TARGET_PLAYER;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_nearest_entity") {
+        flags |= DEF_FLAG_TARGET_NEAREST_ENTITY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_nearest_enemy") {
+        flags |= DEF_FLAG_TARGET_NEAREST_ENEMY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_nearest_friend") {
+        flags |= DEF_FLAG_TARGET_NEAREST_FRIEND;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_nearest_misc") {
+        flags |= DEF_FLAG_TARGET_NEAREST_MISC;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "no_entity_collision") {
+        flags |= DEF_FLAG_NO_ENTITY_COLLISION;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "no_enemy_collision") {
+        flags |= DEF_FLAG_NO_ENEMY_COLLISION;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "no_friend_collision") {
+        flags |= DEF_FLAG_NO_FRIEND_COLLISION;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "no_misc_collision") {
+        flags |= DEF_FLAG_NO_MISC_COLLISION;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "no_player_collision") {
+        flags |= DEF_FLAG_NO_PLAYER_COLLISION;
+    }
+
+    flags
 }
 
 fn load_behaviors(dir: &Path) -> Result<Vec<BehaviorDef>, EntityLoadError> {
@@ -1182,6 +1222,7 @@ async fn load_entities_from_dir_wasm(
 
         let collides = raw.collides.unwrap_or(true)
             && !trait_indices_have_flag(&trait_indices, traits, "no_map_collision");
+        let flags = entity_flags_from_trait_indices(&trait_indices, traits);
 
         let def = EntityDef {
             id: raw.id.clone(),
@@ -1206,6 +1247,7 @@ async fn load_entities_from_dir_wasm(
             base_stats,
             speed: raw.speed,
             collides,
+            flags,
         };
 
         let index = entities.len();
@@ -1307,6 +1349,7 @@ async fn load_entities_from_dir(
 
         let collides = raw.collides.unwrap_or(true)
             && !trait_indices_have_flag(&trait_indices, traits, "no_map_collision");
+        let flags = entity_flags_from_trait_indices(&trait_indices, traits);
 
         let def = EntityDef {
             id: raw.id.clone(),
@@ -1331,6 +1374,7 @@ async fn load_entities_from_dir(
             base_stats,
             speed: raw.speed,
             collides,
+            flags,
         };
 
         let index = entities.len();
