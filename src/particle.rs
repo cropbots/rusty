@@ -92,6 +92,7 @@ struct Particle {
     rotation_speed: f32,
     template: usize,
     texture: Option<Texture2D>,
+    dest_size: Option<Vec2>,
 }
 
 impl Default for Particle {
@@ -109,6 +110,7 @@ impl Default for Particle {
             rotation_speed: 0.0,
             template: 0,
             texture: None,
+            dest_size: None,
         }
     }
 }
@@ -202,7 +204,10 @@ impl ParticlePool {
                 ParticleShape::Texture => {
                     let tex = particle.texture.as_ref().or(template.texture.as_ref());
                     if let Some(tex) = tex {
-                        let dest = vec2(tex.width() * size, tex.height() * size);
+                        let base_dest = particle
+                            .dest_size
+                            .unwrap_or_else(|| vec2(tex.width(), tex.height()));
+                        let dest = base_dest * size;
                         draw_texture_ex(
                             tex,
                             particle.pos.x - dest.x * 0.5,
@@ -234,8 +239,11 @@ impl ParticlePool {
                 ParticleShape::Quad => size * 0.5,
                 ParticleShape::Texture => {
                     let tex = particle.texture.as_ref().or(template.texture.as_ref());
-                    tex.map(|t| t.width().max(t.height()) * size * 0.5)
-                        .unwrap_or(size)
+                    let base = particle.dest_size.unwrap_or_else(|| {
+                        tex.map(|t| vec2(t.width(), t.height()))
+                            .unwrap_or(vec2(size, size))
+                    });
+                    base.x.max(base.y) * size * 0.5
                 }
             };
             if radius.is_nan() || radius < 0.0 {
@@ -269,7 +277,10 @@ impl ParticlePool {
                 ParticleShape::Texture => {
                     let tex = particle.texture.as_ref().or(template.texture.as_ref());
                     if let Some(tex) = tex {
-                        let dest = vec2(tex.width() * size, tex.height() * size);
+                        let base_dest = particle
+                            .dest_size
+                            .unwrap_or_else(|| vec2(tex.width(), tex.height()));
+                        let dest = base_dest * size;
                         draw_texture_ex(
                             tex,
                             particle.pos.x - dest.x * 0.5,
@@ -406,7 +417,7 @@ impl ParticleSystem {
     }
 
     pub fn update_emitter(&mut self, emitter: &mut ParticleEmitter, pos: Vec2, dt: f32) {
-        self.update_emitter_with_texture(emitter, pos, dt, None);
+        self.update_emitter_with_texture(emitter, pos, dt, None, None);
     }
 
     pub fn update_emitter_with_texture(
@@ -415,6 +426,7 @@ impl ParticleSystem {
         pos: Vec2,
         dt: f32,
         texture: Option<&Texture2D>,
+        dest_size: Option<Vec2>,
     ) {
         let cfg = self.templates[emitter.template].config.clone();
 
@@ -425,7 +437,7 @@ impl ParticleSystem {
 
         if !emitter.burst_done && cfg.burst > 0 {
             for _ in 0..cfg.burst {
-                self.spawn_particle(emitter.template, pos, Vec2::ZERO, texture);
+                self.spawn_particle(emitter.template, pos, Vec2::ZERO, texture, dest_size);
             }
             emitter.burst_done = true;
         }
@@ -441,6 +453,7 @@ impl ParticleSystem {
                     pos,
                     (pos - emitter.last_pos) / dt.max(0.0001),
                     texture,
+                    dest_size,
                 );
             }
         }
@@ -461,6 +474,7 @@ impl ParticleSystem {
                         spawn_pos,
                         dir / dt.max(0.0001),
                         texture,
+                        dest_size,
                     );
                 }
             }
@@ -499,6 +513,7 @@ impl ParticleSystem {
         pos: Vec2,
         emitter_vel: Vec2,
         override_texture: Option<&Texture2D>,
+        override_dest_size: Option<Vec2>,
     ) {
         let cfg = &self.templates[template].config;
         let max_particles = ((cfg.max_particles as f32) * self.budget_scale)
@@ -524,6 +539,11 @@ impl ParticleSystem {
         } else {
             None
         };
+        let dest_size = if cfg.dynamic_sprite {
+            override_dest_size
+        } else {
+            None
+        };
 
         let spawned = self.pool.spawn(Particle {
             pos,
@@ -538,6 +558,7 @@ impl ParticleSystem {
             rotation_speed,
             template,
             texture,
+            dest_size,
         });
         if spawned {
             self.template_counts[template] += 1;

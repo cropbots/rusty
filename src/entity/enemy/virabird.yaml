@@ -2,25 +2,26 @@ id: virabird
 traits:
   - target_player
   - no_map_collision
+  - no_entity_collision
 stats:
-  hp: 5
-  speed: 4.5
+  hp: 2
+  speed: 200
 visuals:
   sprite: "src/assets/objects/virabird.png"
   draw_params:
     # 3.005780347 x 3.008849558
-    dest_size: [17.3, 11.3]
+    dest_size: [12.65, 9.15]
     rotation: 0.0
     flip_x: false
     flip_y: false
-    pivot: [16, 16]
+    pivot: [0, 0]
     color: [255, 255, 255, 255]
     offset: [0, 0]
 hitbox:
-  x: 16
-  y: 16
-  w: 17.3
-  h: 11.3
+  x: 0
+  y: 0
+  w: 12.65
+  h: 9.15
 behavior:
   type: action
   name: virabird_ai

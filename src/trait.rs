@@ -28,6 +28,11 @@ pub fn append_builtin_traits(traits: &mut Vec<TraitDef>) {
     push_trait("target_nearest_friend", &["target_nearest_friend"]);
     push_trait("target_nearest_misc", &["target_nearest_misc"]);
     push_trait("no_map_collision", &["no_map_collision"]);
+    push_trait("no_entity_collision", &["no_entity_collision"]);
+    push_trait("no_enemy_collision", &["no_enemy_collision"]);
+    push_trait("no_friend_collision", &["no_friend_collision"]);
+    push_trait("no_misc_collision", &["no_misc_collision"]);
+    push_trait("no_player_collision", &["no_player_collision"]);
 }
 
 pub fn movement_idle(
@@ -48,8 +53,8 @@ pub fn movement_wander(
     _ctx: &EntityContext,
 ) {
     let speed = params.get("speed").copied().unwrap_or(entity.speed);
-    let accel = params.get("accel").copied().unwrap_or(10.0);
-    let interval = params.get("interval").copied().unwrap_or(1.5);
+    let accel = params.get("accel").copied().unwrap_or(20.0);
+    let interval = params.get("interval").copied().unwrap_or(3.0);
 
     behavior.timer -= dt;
     if behavior.timer <= 0.0 || behavior.dir.length_squared() == 0.0 {
@@ -78,7 +83,7 @@ pub fn movement_seek(
     _ctx: &EntityContext,
 ) {
     let speed = params.get("speed").copied().unwrap_or(entity.speed);
-    let accel = params.get("accel").copied().unwrap_or(12.0);
+    let accel = params.get("accel").copied().unwrap_or(24.0);
     let Some(target) = entity.current_target.as_ref().map(Target::position) else {
         return;
     };
@@ -107,7 +112,7 @@ pub fn movement_flee(
     _ctx: &EntityContext,
 ) {
     let speed = params.get("speed").copied().unwrap_or(entity.speed);
-    let accel = params.get("accel").copied().unwrap_or(12.0);
+    let accel = params.get("accel").copied().unwrap_or(24.0);
     let Some(target) = entity.current_target.as_ref().map(Target::position) else {
         return;
     };
@@ -135,9 +140,9 @@ pub fn movement_dash_at_target(
     params: &MovementParams,
     _ctx: &EntityContext,
 ) {
-    let dash_speed = params.get("dash_speed").copied().unwrap_or(1100.0);
-    let dash_duration = params.get("dash_duration").copied().unwrap_or(0.07);
-    let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(0.5);
+    let dash_speed = params.get("dash_speed").copied().unwrap_or(500.0);
+    let dash_duration = params.get("dash_duration").copied().unwrap_or(0.14);
+    let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(0.1);
 
     if behavior.cooldown > 0.0 {
         behavior.cooldown = (behavior.cooldown - dt).max(0.0);
@@ -171,11 +176,11 @@ pub fn movement_virabird_ai(
 ) {
     let seek_range = params.get("seek_range").copied().unwrap_or(75.0);
     let flee_range = params.get("flee_range").copied().unwrap_or(50.0);
-    let seek_force = params.get("seek_force").copied().unwrap_or(750.0);
-    let flee_force = params.get("flee_force").copied().unwrap_or(1000.0);
-    let strafe_force = params.get("strafe_force").copied().unwrap_or(300.0);
+    let seek_force = params.get("seek_force").copied().unwrap_or(1500.0);
+    let flee_force = params.get("flee_force").copied().unwrap_or(2000.0);
+    let strafe_force = params.get("strafe_force").copied().unwrap_or(600.0);
     let dash_speed = params.get("dash_speed").copied().unwrap_or(0.0);
-    let dash_duration = params.get("dash_duration").copied().unwrap_or(0.9);
+    let dash_duration = params.get("dash_duration").copied().unwrap_or(1.8);
     let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(0.0);
 
     if let Some(target) = entity.current_target.as_ref().map(Target::position) {

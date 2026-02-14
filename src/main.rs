@@ -253,19 +253,19 @@ async fn main() {
     show_loading(&loading, "Loading", 0.75, loading_spin).await;
 
     let mut entities = Vec::<Entity>::new();
-    for _ in 0..2 {
+    for _ in 0..100 {
         let pos = vec2(
-            helpers::random_range(0.0, 100.0),
-            helpers::random_range(0.0, 100.0),
+            helpers::random_range(0.0, 500.0),
+            helpers::random_range(0.0, 500.0),
         );
         if let Some(virat) = Entity::spawn(&db, "virabird", pos, &registry) {
             entities.push(virat);
         }
     }
-    for _ in 0..3 {
+    for _ in 0..50 {
         let pos = vec2(
-            helpers::random_range(0.0, 100.0),
-            helpers::random_range(0.0, 100.0),
+            helpers::random_range(0.0, 500.0),
+            helpers::random_range(0.0, 500.0),
         );
         if let Some(virat) = Entity::spawn(&db, "virat", pos, &registry) {
             entities.push(virat);
@@ -388,6 +388,7 @@ async fn main() {
             }
             ent_idx += 1;
         }
+        resolve_entity_overlaps(&mut entities, &db, &maps);
         damage_events.extend(ctx.damage_events.drain(..));
 
         for ent in entities.iter_mut() {
@@ -409,6 +410,7 @@ async fn main() {
                         pos,
                         dt,
                         Some(&def.texture.texture),
+                        Some(size),
                     );
                 }
             } else if let Some(emitter) = ent.instance.dash_trail.as_mut() {
@@ -463,6 +465,7 @@ async fn main() {
                     player.position() - Vec2::new(0.0, player.texture.size().y / 8.0),
                     dt,
                     Some(&player.texture),
+                    Some(player.texture.size() * 0.25),
                 );
             } else {
                 particles.track_emitter(
@@ -643,6 +646,91 @@ fn offscreen_fade_alpha(hitbox: Rect, view_rect: Rect, fade_pad: f32) -> f32 {
     let nearest_y = cy.clamp(view_rect.y, view_rect.y + view_rect.h);
     let distance = vec2(cx - nearest_x, cy - nearest_y).length();
     (1.0 - distance / fade_pad.max(1.0)).clamp(0.0, 1.0)
+}
+
+fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &TileMap) {
+    if entities.len() < 2 {
+        return;
+    }
+
+    let epsilon = 0.001;
+    for _ in 0..3 {
+        let mut any = false;
+        for i in 0..entities.len() {
+            for j in (i + 1)..entities.len() {
+                let a_def_idx = entities[i].instance.def;
+                let b_def_idx = entities[j].instance.def;
+                if !entities_should_collide(db, a_def_idx, b_def_idx) {
+                    continue;
+                }
+
+                let a_def = &db.entities[a_def_idx];
+                let b_def = &db.entities[b_def_idx];
+                let a_hb = a_def.world_hitbox(entities[i].instance.pos);
+                let b_hb = b_def.world_hitbox(entities[j].instance.pos);
+
+                let overlap_x = (a_hb.x + a_hb.w).min(b_hb.x + b_hb.w) - a_hb.x.max(b_hb.x);
+                let overlap_y = (a_hb.y + a_hb.h).min(b_hb.y + b_hb.h) - a_hb.y.max(b_hb.y);
+                if overlap_x <= 0.0 || overlap_y <= 0.0 {
+                    continue;
+                }
+
+                any = true;
+                if overlap_x <= overlap_y {
+                    let a_center = a_hb.x + a_hb.w * 0.5;
+                    let b_center = b_hb.x + b_hb.w * 0.5;
+                    let sign = if a_center <= b_center { -1.0 } else { 1.0 };
+                    let push = overlap_x * 0.5 + epsilon;
+                    entities[i].instance.pos.x += sign * push;
+                    entities[j].instance.pos.x -= sign * push;
+                } else {
+                    let a_center = a_hb.y + a_hb.h * 0.5;
+                    let b_center = b_hb.y + b_hb.h * 0.5;
+                    let sign = if a_center <= b_center { -1.0 } else { 1.0 };
+                    let push = overlap_y * 0.5 + epsilon;
+                    entities[i].instance.pos.y += sign * push;
+                    entities[j].instance.pos.y -= sign * push;
+                }
+            }
+        }
+
+        for ent in entities.iter_mut() {
+            ent.clamp_to_map(map, db);
+        }
+
+        if !any {
+            break;
+        }
+    }
+}
+
+fn entities_should_collide(db: &EntityDatabase, a_def_idx: usize, b_def_idx: usize) -> bool {
+    if entity_has_flag(db, a_def_idx, "no_entity_collision")
+        || entity_has_flag(db, b_def_idx, "no_entity_collision")
+    {
+        return false;
+    }
+
+    let a_kind = db.entities[a_def_idx].kind;
+    let b_kind = db.entities[b_def_idx].kind;
+    !blocks_kind(db, a_def_idx, b_kind) && !blocks_kind(db, b_def_idx, a_kind)
+}
+
+fn blocks_kind(db: &EntityDatabase, def_idx: usize, kind: entity::EntityKind) -> bool {
+    match kind {
+        entity::EntityKind::Enemy => entity_has_flag(db, def_idx, "no_enemy_collision"),
+        entity::EntityKind::Friend => entity_has_flag(db, def_idx, "no_friend_collision"),
+        entity::EntityKind::Misc => entity_has_flag(db, def_idx, "no_misc_collision"),
+    }
+}
+
+fn entity_has_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> bool {
+    db.entities[def_idx].traits.iter().any(|&trait_idx| {
+        db.traits
+            .get(trait_idx)
+            .map(|tr| tr.flags.iter().any(|f| f == flag))
+            .unwrap_or(false)
+    })
 }
 
 fn draw_player_health(

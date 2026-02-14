@@ -374,24 +374,41 @@ impl EntityInstance {
             behavior.params = params;
         }
         self.behaviors = behaviors;
-        self.pos += self.vel * dt;
 
-        let def = &db.entities[self.def];
-        let max_speed = def.speed.max(1.0);
+        let mut max_speed = self.speed.max(1.0);
+        if let Some(behavior) = self.behaviors.first() {
+            if behavior.name == "dash_at_target" && behavior.timer > 0.0 {
+                let dash_speed = behavior
+                    .params
+                    .get("dash_speed")
+                    .copied()
+                    .unwrap_or(2200.0);
+                max_speed = max_speed.max(dash_speed.abs());
+            }
+        }
         let speed = self.vel.length();
         if speed > max_speed {
             self.vel = self.vel / speed * max_speed;
         }
 
         let def = &db.entities[self.def];
-        if def.collides {
+        let dynamic_collision_hitboxes = collect_dynamic_collision_hitboxes(db, self, ctx);
+        if def.collides || !dynamic_collision_hitboxes.is_empty() {
             let mut pos = self.pos;
             let mut vel = self.vel;
 
             pos.x += vel.x * dt;
-            if let Some(grid) = map.grid_index(pos) {
-                let radius = collision_radius(map, vel, dt);
-                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+            self.collision_scratch.clear();
+            if def.collides {
+                let probe = hitbox_center_world(pos, def.hitbox);
+                if let Some(grid) = map.grid_index(probe) {
+                    let radius = collision_radius(map, vel, dt);
+                    map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                }
+            }
+            self.collision_scratch
+                .extend(dynamic_collision_hitboxes.iter().copied());
+            if !self.collision_scratch.is_empty() {
                 let (resolved, vx) = crate::helpers::resolve_collisions_axis(
                     def.hitbox,
                     pos,
@@ -404,9 +421,17 @@ impl EntityInstance {
             }
 
             pos.y += vel.y * dt;
-            if let Some(grid) = map.grid_index(pos) {
-                let radius = collision_radius(map, vel, dt);
-                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+            self.collision_scratch.clear();
+            if def.collides {
+                let probe = hitbox_center_world(pos, def.hitbox);
+                if let Some(grid) = map.grid_index(probe) {
+                    let radius = collision_radius(map, vel, dt);
+                    map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                }
+            }
+            self.collision_scratch
+                .extend(dynamic_collision_hitboxes.iter().copied());
+            if !self.collision_scratch.is_empty() {
                 let (resolved, vy) = crate::helpers::resolve_collisions_axis(
                     def.hitbox,
                     pos,
@@ -420,6 +445,8 @@ impl EntityInstance {
 
             self.pos = pos;
             self.vel = vel;
+        } else {
+            self.pos += self.vel * dt;
         }
 
         self.apply_contact_damage(ctx, db);
@@ -728,7 +755,7 @@ impl EntityDatabase {
             def: index,
             pos,
             vel: Vec2::ZERO,
-            speed: def.speed,
+            speed: stats.get("speed", def.speed).max(1.0),
             behaviors,
             stats,
             hp: max_hp,
@@ -762,6 +789,13 @@ fn collision_radius(map: &crate::map::TileMap, vel: Vec2, dt: f32) -> i32 {
     (1 + tiles).clamp(1, 4)
 }
 
+fn hitbox_center_world(pos: Vec2, hitbox: Rect) -> Vec2 {
+    vec2(
+        pos.x + hitbox.x + hitbox.w * 0.5,
+        pos.y + hitbox.y + hitbox.h * 0.5,
+    )
+}
+
 fn entity_has_trait_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> bool {
     let def = &db.entities[def_idx];
     def.traits.iter().any(|&trait_idx| {
@@ -770,6 +804,52 @@ fn entity_has_trait_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> boo
             .map(|def| def.flags.iter().any(|f| f == flag))
             .unwrap_or(false)
     })
+}
+
+fn collect_dynamic_collision_hitboxes(
+    db: &EntityDatabase,
+    entity: &EntityInstance,
+    ctx: &EntityContext,
+) -> Vec<Rect> {
+    if entity_has_trait_flag(db, entity.def, "no_entity_collision") {
+        return Vec::new();
+    }
+
+    let no_enemy_collision = entity_has_trait_flag(db, entity.def, "no_enemy_collision");
+    let no_friend_collision = entity_has_trait_flag(db, entity.def, "no_friend_collision");
+    let no_misc_collision = entity_has_trait_flag(db, entity.def, "no_misc_collision");
+    let no_player_collision = entity_has_trait_flag(db, entity.def, "no_player_collision");
+    let target_entity_id = match entity.current_target {
+        Some(Target::Entity(target)) => Some(target.id),
+        _ => None,
+    };
+    let target_is_player = matches!(entity.current_target, Some(Target::Player(_)));
+
+    let mut hitboxes = Vec::with_capacity(ctx.entities.len() + 1);
+
+    if !no_player_collision && !target_is_player {
+        if let Some(player) = ctx.player {
+            hitboxes.push(player.hitbox);
+        }
+    }
+
+    for other in &ctx.entities {
+        if other.id == entity.uid {
+            continue;
+        }
+        if target_entity_id == Some(other.id) {
+            continue;
+        }
+        match other.kind {
+            EntityKind::Enemy if no_enemy_collision => continue,
+            EntityKind::Friend if no_friend_collision => continue,
+            EntityKind::Misc if no_misc_collision => continue,
+            _ => {}
+        }
+        hitboxes.push(other.hitbox);
+    }
+
+    hitboxes
 }
 
 struct SelectedAction<'a> {

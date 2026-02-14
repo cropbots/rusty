@@ -111,7 +111,8 @@ impl Player {
 
         pos.x += vel.x * dt;
         if !self.is_dashing() {
-            if let Some(grid) = map.grid_index(pos) {
+            let probe = hitbox_center_world(pos, self.hitbox);
+            if let Some(grid) = map.grid_index(probe) {
                 let radius = collision_radius(map, vel, dt);
                 map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
                 let (resolved, vx) = resolve_collisions_axis(
@@ -128,7 +129,8 @@ impl Player {
 
         pos.y += vel.y * dt;
         if !self.is_dashing() {
-            if let Some(grid) = map.grid_index(pos) {
+            let probe = hitbox_center_world(pos, self.hitbox);
+            if let Some(grid) = map.grid_index(probe) {
                 let radius = collision_radius(map, vel, dt);
                 map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
                 let (resolved, vy) = resolve_collisions_axis(
@@ -236,4 +238,11 @@ fn collision_radius(map: &TileMap, vel: Vec2, dt: f32) -> i32 {
     let speed = vel.length();
     let tiles = (speed * dt / map.tile_size().max(1.0)).ceil() as i32;
     (1 + tiles).clamp(1, 4)
+}
+
+fn hitbox_center_world(pos: Vec2, hitbox: Rect) -> Vec2 {
+    vec2(
+        pos.x + hitbox.x + hitbox.w * 0.5,
+        pos.y + hitbox.y + hitbox.h * 0.5,
+    )
 }
