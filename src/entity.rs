@@ -310,6 +310,7 @@ pub struct EntityInstance {
     pub hp: f32,
     pub max_hp: f32,
     pub collision_scratch: Vec<Rect>,
+    pub dynamic_collision_scratch: Vec<Rect>,
     pub current_target: Option<Target>,
     pub contact_cooldown: f32,
     pub dash_trail: Option<ParticleEmitter>,
@@ -392,8 +393,16 @@ impl EntityInstance {
         }
 
         let def = &db.entities[self.def];
-        let dynamic_collision_hitboxes = collect_dynamic_collision_hitboxes(db, self, ctx);
-        if def.collides || !dynamic_collision_hitboxes.is_empty() {
+        self.dynamic_collision_scratch.clear();
+        collect_dynamic_collision_hitboxes(
+            db,
+            self.def,
+            self.uid,
+            self.current_target,
+            ctx,
+            &mut self.dynamic_collision_scratch,
+        );
+        if def.collides || !self.dynamic_collision_scratch.is_empty() {
             let mut pos = self.pos;
             let mut vel = self.vel;
 
@@ -407,7 +416,7 @@ impl EntityInstance {
                 }
             }
             self.collision_scratch
-                .extend(dynamic_collision_hitboxes.iter().copied());
+                .extend(self.dynamic_collision_scratch.iter().copied());
             if !self.collision_scratch.is_empty() {
                 let (resolved, vx) = crate::helpers::resolve_collisions_axis(
                     def.hitbox,
@@ -430,7 +439,7 @@ impl EntityInstance {
                 }
             }
             self.collision_scratch
-                .extend(dynamic_collision_hitboxes.iter().copied());
+                .extend(self.dynamic_collision_scratch.iter().copied());
             if !self.collision_scratch.is_empty() {
                 let (resolved, vy) = crate::helpers::resolve_collisions_axis(
                     def.hitbox,
@@ -761,6 +770,7 @@ impl EntityDatabase {
             hp: max_hp,
             max_hp,
             collision_scratch: Vec::with_capacity(25),
+            dynamic_collision_scratch: Vec::with_capacity(25),
             current_target: None,
             contact_cooldown: 0.0,
             dash_trail: None,
@@ -808,33 +818,37 @@ fn entity_has_trait_flag(db: &EntityDatabase, def_idx: usize, flag: &str) -> boo
 
 fn collect_dynamic_collision_hitboxes(
     db: &EntityDatabase,
-    entity: &EntityInstance,
+    entity_def: usize,
+    entity_uid: u64,
+    current_target: Option<Target>,
     ctx: &EntityContext,
-) -> Vec<Rect> {
-    if entity_has_trait_flag(db, entity.def, "no_entity_collision") {
-        return Vec::new();
+    out: &mut Vec<Rect>,
+) {
+    out.clear();
+    if entity_has_trait_flag(db, entity_def, "no_entity_collision") {
+        return;
     }
 
-    let no_enemy_collision = entity_has_trait_flag(db, entity.def, "no_enemy_collision");
-    let no_friend_collision = entity_has_trait_flag(db, entity.def, "no_friend_collision");
-    let no_misc_collision = entity_has_trait_flag(db, entity.def, "no_misc_collision");
-    let no_player_collision = entity_has_trait_flag(db, entity.def, "no_player_collision");
-    let target_entity_id = match entity.current_target {
+    let no_enemy_collision = entity_has_trait_flag(db, entity_def, "no_enemy_collision");
+    let no_friend_collision = entity_has_trait_flag(db, entity_def, "no_friend_collision");
+    let no_misc_collision = entity_has_trait_flag(db, entity_def, "no_misc_collision");
+    let no_player_collision = entity_has_trait_flag(db, entity_def, "no_player_collision");
+    let target_entity_id = match current_target {
         Some(Target::Entity(target)) => Some(target.id),
         _ => None,
     };
-    let target_is_player = matches!(entity.current_target, Some(Target::Player(_)));
+    let target_is_player = matches!(current_target, Some(Target::Player(_)));
 
-    let mut hitboxes = Vec::with_capacity(ctx.entities.len() + 1);
+    out.reserve(ctx.entities.len() + 1);
 
     if !no_player_collision && !target_is_player {
         if let Some(player) = ctx.player {
-            hitboxes.push(player.hitbox);
+            out.push(player.hitbox);
         }
     }
 
     for other in &ctx.entities {
-        if other.id == entity.uid {
+        if other.id == entity_uid {
             continue;
         }
         if target_entity_id == Some(other.id) {
@@ -846,10 +860,8 @@ fn collect_dynamic_collision_hitboxes(
             EntityKind::Misc if no_misc_collision => continue,
             _ => {}
         }
-        hitboxes.push(other.hitbox);
+        out.push(other.hitbox);
     }
-
-    hitboxes
 }
 
 struct SelectedAction<'a> {

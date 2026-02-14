@@ -93,13 +93,13 @@ pub fn resolve_collisions_axis(
     match axis {
         Axis::X => {
             let mut candidate = pos.x;
+            let rect = Rect::new(
+                pos.x + hitbox.x,
+                pos.y + hitbox.y,
+                hitbox.w,
+                hitbox.h,
+            );
             for collider in colliders {
-                let rect = Rect::new(
-                    pos.x + hitbox.x,
-                    pos.y + hitbox.y,
-                    hitbox.w,
-                    hitbox.h,
-                );
                 if !rect.overlaps(collider) {
                     continue;
                 }
@@ -123,13 +123,13 @@ pub fn resolve_collisions_axis(
         }
         Axis::Y => {
             let mut candidate = pos.y;
+            let rect = Rect::new(
+                pos.x + hitbox.x,
+                pos.y + hitbox.y,
+                hitbox.w,
+                hitbox.h,
+            );
             for collider in colliders {
-                let rect = Rect::new(
-                    pos.x + hitbox.x,
-                    pos.y + hitbox.y,
-                    hitbox.w,
-                    hitbox.h,
-                );
                 if !rect.overlaps(collider) {
                     continue;
                 }

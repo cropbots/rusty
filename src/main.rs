@@ -654,54 +654,110 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
     }
 
     let epsilon = 0.001;
+    let cell_size = 32.0;
+    let mut overlap_marks = vec![0u32; entities.len()];
+    let mut overlap_stamp = 1u32;
+    let mut collide_cache: HashMap<(usize, usize), bool> = HashMap::new();
+
     for _ in 0..3 {
         let mut any = false;
-        for i in 0..entities.len() {
-            for j in (i + 1)..entities.len() {
-                let a_def_idx = entities[i].instance.def;
-                let b_def_idx = entities[j].instance.def;
-                if !entities_should_collide(db, a_def_idx, b_def_idx) {
-                    continue;
-                }
+        let mut hitboxes = Vec::with_capacity(entities.len());
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::with_capacity(entities.len() * 2);
 
-                let a_def = &db.entities[a_def_idx];
-                let b_def = &db.entities[b_def_idx];
-                let a_hb = a_def.world_hitbox(entities[i].instance.pos);
-                let b_hb = b_def.world_hitbox(entities[j].instance.pos);
-
-                let overlap_x = (a_hb.x + a_hb.w).min(b_hb.x + b_hb.w) - a_hb.x.max(b_hb.x);
-                let overlap_y = (a_hb.y + a_hb.h).min(b_hb.y + b_hb.h) - a_hb.y.max(b_hb.y);
-                if overlap_x <= 0.0 || overlap_y <= 0.0 {
-                    continue;
-                }
-
-                any = true;
-                if overlap_x <= overlap_y {
-                    let a_center = a_hb.x + a_hb.w * 0.5;
-                    let b_center = b_hb.x + b_hb.w * 0.5;
-                    let sign = if a_center <= b_center { -1.0 } else { 1.0 };
-                    let push = overlap_x * 0.5 + epsilon;
-                    entities[i].instance.pos.x += sign * push;
-                    entities[j].instance.pos.x -= sign * push;
-                } else {
-                    let a_center = a_hb.y + a_hb.h * 0.5;
-                    let b_center = b_hb.y + b_hb.h * 0.5;
-                    let sign = if a_center <= b_center { -1.0 } else { 1.0 };
-                    let push = overlap_y * 0.5 + epsilon;
-                    entities[i].instance.pos.y += sign * push;
-                    entities[j].instance.pos.y -= sign * push;
+        for (idx, ent) in entities.iter().enumerate() {
+            let hb = db.entities[ent.instance.def].world_hitbox(ent.instance.pos);
+            hitboxes.push(hb);
+            let (min_cx, max_cx, min_cy, max_cy) = rect_cell_range(hb, cell_size);
+            for cy in min_cy..=max_cy {
+                for cx in min_cx..=max_cx {
+                    grid.entry((cx, cy)).or_default().push(idx);
                 }
             }
         }
 
-        for ent in entities.iter_mut() {
-            ent.clamp_to_map(map, db);
+        for i in 0..entities.len() {
+            overlap_stamp = overlap_stamp.wrapping_add(1);
+            if overlap_stamp == 0 {
+                overlap_marks.fill(0);
+                overlap_stamp = 1;
+            }
+
+            let a_hb = hitboxes[i];
+            let (min_cx, max_cx, min_cy, max_cy) = rect_cell_range(a_hb, cell_size);
+            for cy in min_cy..=max_cy {
+                for cx in min_cx..=max_cx {
+                    let Some(bucket) = grid.get(&(cx, cy)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        if j <= i {
+                            continue;
+                        }
+                        if overlap_marks[j] == overlap_stamp {
+                            continue;
+                        }
+                        overlap_marks[j] = overlap_stamp;
+
+                        let a_def_idx = entities[i].instance.def;
+                        let b_def_idx = entities[j].instance.def;
+                        let pair = if a_def_idx <= b_def_idx {
+                            (a_def_idx, b_def_idx)
+                        } else {
+                            (b_def_idx, a_def_idx)
+                        };
+                        let can_collide = *collide_cache
+                            .entry(pair)
+                            .or_insert_with(|| entities_should_collide(db, a_def_idx, b_def_idx));
+                        if !can_collide {
+                            continue;
+                        }
+
+                        let b_hb = hitboxes[j];
+
+                        let overlap_x = (a_hb.x + a_hb.w).min(b_hb.x + b_hb.w) - a_hb.x.max(b_hb.x);
+                        let overlap_y = (a_hb.y + a_hb.h).min(b_hb.y + b_hb.h) - a_hb.y.max(b_hb.y);
+                        if overlap_x <= 0.0 || overlap_y <= 0.0 {
+                            continue;
+                        }
+
+                        any = true;
+                        if overlap_x <= overlap_y {
+                            let a_center = a_hb.x + a_hb.w * 0.5;
+                            let b_center = b_hb.x + b_hb.w * 0.5;
+                            let sign = if a_center <= b_center { -1.0 } else { 1.0 };
+                            let push = overlap_x * 0.5 + epsilon;
+                            entities[i].instance.pos.x += sign * push;
+                            entities[j].instance.pos.x -= sign * push;
+                        } else {
+                            let a_center = a_hb.y + a_hb.h * 0.5;
+                            let b_center = b_hb.y + b_hb.h * 0.5;
+                            let sign = if a_center <= b_center { -1.0 } else { 1.0 };
+                            let push = overlap_y * 0.5 + epsilon;
+                            entities[i].instance.pos.y += sign * push;
+                            entities[j].instance.pos.y -= sign * push;
+                        }
+                    }
+                }
+            }
         }
 
         if !any {
             break;
         }
+
+        for ent in entities.iter_mut() {
+            ent.clamp_to_map(map, db);
+        }
     }
+}
+
+fn rect_cell_range(rect: Rect, cell_size: f32) -> (i32, i32, i32, i32) {
+    let cell = cell_size.max(1.0);
+    let min_cx = (rect.x / cell).floor() as i32;
+    let max_cx = ((rect.x + rect.w) / cell).floor() as i32;
+    let min_cy = (rect.y / cell).floor() as i32;
+    let max_cy = ((rect.y + rect.h) / cell).floor() as i32;
+    (min_cx, max_cx, min_cy, max_cy)
 }
 
 fn entities_should_collide(db: &EntityDatabase, a_def_idx: usize, b_def_idx: usize) -> bool {
