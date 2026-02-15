@@ -255,7 +255,7 @@ async fn main() {
     show_loading(&loading, "Loading", 0.75, loading_spin).await;
 
     let mut entities = Vec::<Entity>::new();
-    for _ in 0..3 {
+    for _ in 0..30 {
         let pos = vec2(
             helpers::random_range(0.0, 500.0),
             helpers::random_range(0.0, 500.0),
@@ -264,7 +264,7 @@ async fn main() {
             entities.push(virabird);
         }
     }
-    for _ in 0..3 {
+    for _ in 0..50 {
         let pos = vec2(
             helpers::random_range(0.0, 500.0),
             helpers::random_range(0.0, 500.0),
@@ -274,7 +274,7 @@ async fn main() {
         }
     }
 
-    for _ in 0..2 {
+    for _ in 0..30 {
         let pos = vec2(
             helpers::random_range(0.0, 500.0),
             helpers::random_range(0.0, 500.0),

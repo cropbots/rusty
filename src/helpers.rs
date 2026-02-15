@@ -117,6 +117,7 @@ pub fn resolve_collisions_axis(
     match axis {
         Axis::X => {
             let mut candidate = pos.x;
+            let base_x = pos.x;
             let rect = Rect::new(
                 pos.x + hitbox.x,
                 pos.y + hitbox.y,
@@ -141,12 +142,16 @@ pub fn resolve_collisions_axis(
                 }
             }
             if hit {
+                // Cap correction per step to avoid large ejections when many colliders overlap.
+                let max_push = hitbox.w.max(1.0);
+                candidate = candidate.clamp(base_x - max_push, base_x + max_push);
                 pos.x = candidate;
                 return (pos, 0.0);
             }
         }
         Axis::Y => {
             let mut candidate = pos.y;
+            let base_y = pos.y;
             let rect = Rect::new(
                 pos.x + hitbox.x,
                 pos.y + hitbox.y,
@@ -171,6 +176,9 @@ pub fn resolve_collisions_axis(
                 }
             }
             if hit {
+                // Cap correction per step to avoid large ejections when many colliders overlap.
+                let max_push = hitbox.h.max(1.0);
+                candidate = candidate.clamp(base_y - max_push, base_y + max_push);
                 pos.y = candidate;
                 return (pos, 0.0);
             }

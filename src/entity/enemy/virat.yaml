@@ -18,21 +18,39 @@ visuals:
     color: [255, 255, 255, 255]
     offset: [0, 0]
 hitbox:
-  x: 0
-  y: 0
+  x: 12.975
+  y: 8.475
   w: 12.975
   h: 8.475
 behavior:
   type: selector
   children:
     - type: sequence
+      always: true
       children:
         - type: condition
           name: target_in_range
-          value: 0.5 # the viewport is 1.0 in width and height
+          value: 0.35 # the viewport is 1.0 in width and height
         - type: action
           name: dash_at_target
           params:
-            cooldown: 1.0
+            dash_cooldown: 1.5
+            dash_speed: 600
+            dash_duration: 0.2
     - type: action
-      name: seek
+      name: watch
+      params:
+        seek_range: 40
+        flee_range: 40
+        seek_force: 50
+        flee_force: 300
+        range_blend: 25
+      always: true
+    - type: sequence
+      children:
+        - type: not_condition
+          name: target_in_range
+          value: 0.5
+        - type: action
+          name: seek
+      always: true

@@ -225,6 +225,138 @@ pub fn movement_flee(
     flee_from_target(entity, behavior, dt, params, "flee_speed", Target::Position(target));
 }
 
+pub fn movement_watch(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    _ctx: &EntityContext,
+) {
+    let Some(target) = entity.current_target else {
+        return;
+    };
+    watch_target(entity, behavior, dt, params, target);
+}
+
+fn watch_target(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    target: Target,
+) {
+    entity.current_target = Some(target);
+    let to_target = target.position() - entity.pos;
+    let dist = to_target.length();
+    if dist <= 0.0001 {
+        return;
+    }
+
+    let seek_range = params.get("seek_range").copied().unwrap_or(300.0).max(0.0);
+    let flee_range = params.get("flee_range").copied().unwrap_or(150.0).max(0.0);
+    let seek_force = params.get("seek_force").copied().unwrap_or(900.0);
+    let flee_force = params.get("flee_force").copied().unwrap_or(900.0);
+    let band = (seek_range - flee_range).max(0.0);
+    let range_blend = params
+        .get("range_blend")
+        .copied()
+        .unwrap_or((band * 0.25).clamp(8.0, 80.0))
+        .max(0.0001);
+    let smoothing = params
+        .get("watch_smoothing")
+        .copied()
+        .or_else(|| params.get("smoothing").copied())
+        .unwrap_or(10.0)
+        .max(0.0);
+    let dir = to_target / dist;
+
+    let smoothstep01 = |x: f32| {
+        let t = x.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let seek_weight =
+        smoothstep01((dist - (seek_range - range_blend)) / (2.0 * range_blend));
+    let flee_weight =
+        smoothstep01(((flee_range + range_blend) - dist) / (2.0 * range_blend));
+    let desired_force = dir * (seek_force * seek_weight) - dir * (flee_force * flee_weight);
+
+    // Smooth force changes so watch steering doesn't jitter/snap.
+    let t = (smoothing * dt).clamp(0.0, 1.0);
+    behavior.dir = behavior.dir.lerp(desired_force, t);
+
+    entity.vel += behavior.dir;
+}
+
+pub fn movement_watch_nearest_entity(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    if let Some(target) = nearest_entity_target(entity, ctx, None) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_nearest_enemy(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_nearest_friend(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Friend)) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_nearest_misc(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Misc)) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_player(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    if let Some(player) = ctx.player {
+        watch_target(entity, behavior, dt, params, Target::Player(player));
+    } else {
+        entity.current_target = None;
+    }
+}
+
 pub fn movement_seek_nearest_entity(
     entity: &mut EntityInstance,
     behavior: &mut BehaviorRuntime,
@@ -477,7 +609,7 @@ pub fn movement_curve_dash_at_target(
     let dash_duration = params.get("dash_duration").copied().unwrap_or(0.18).max(0.01);
     let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(0.2).max(0.0);
     let arc_strength = params.get("arc_strength").copied().unwrap_or(0.75).clamp(0.0, 2.0);
-    let curve_rate = params.get("curve_rate").copied().unwrap_or(14.0).max(0.0);
+    let curve_rate = params.get("curve_rate").copied().unwrap_or(14.0).max(0.0); // radians/sec
 
     if behavior.cooldown > 0.0 {
         behavior.cooldown = (behavior.cooldown - dt).max(0.0);
@@ -496,8 +628,13 @@ pub fn movement_curve_dash_at_target(
                 } else {
                     1.0
                 };
-                let perp = vec2(-base.y, base.x) * sign;
-                let start_dir = (base + perp * arc_strength).normalize_or_zero();
+                // Angle-based start direction is more stable than vector blending.
+                let start_angle = sign * arc_strength * std::f32::consts::FRAC_PI_2;
+                let cos_a = start_angle.cos();
+                let sin_a = start_angle.sin();
+                let start_dir =
+                    vec2(base.x * cos_a - base.y * sin_a, base.x * sin_a + base.y * cos_a)
+                        .normalize_or_zero();
                 if start_dir.length_squared() > 0.0001 {
                     behavior.dir = start_dir;
                     behavior.timer = dash_duration;
@@ -512,46 +649,91 @@ pub fn movement_curve_dash_at_target(
             let to_target = target - entity.pos;
             if to_target.length_squared() > 0.0001 {
                 let desired = to_target.normalize();
-                let t = (curve_rate * dt).clamp(0.0, 1.0);
-                let next = behavior.dir.lerp(desired, t);
-                if next.length_squared() > 0.0001 {
-                    behavior.dir = next.normalize();
-                }
+                behavior.dir = rotate_towards_dir(behavior.dir, desired, curve_rate * dt);
             }
         }
         entity.vel += behavior.dir * dash_speed;
     }
 }
 
-pub fn movement_virabird_ai(
+pub fn movement_bird_ai(
     entity: &mut EntityInstance,
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
     _ctx: &EntityContext,
 ) {
-    let seek_range = params.get("seek_range").copied().unwrap_or(75.0);
-    let flee_range = params.get("flee_range").copied().unwrap_or(50.0);
+    // JS parity (gameNightly/modules/ai.js virabirdAi):
+    // if dist <= 200 => sMoveTowards(_, player, -1000)
+    // else if dist >= 300 => sMoveTowards(_, player, 1500)
+    // then _.dash(random[-1|0|1], random[-1|0|1])
+    let flee_range = params.get("flee_range").copied().unwrap_or(200.0);
+    let seek_range = params.get("seek_range").copied().unwrap_or(300.0);
+    let flee_force = params.get("flee_force").copied().unwrap_or(1000.0);
     let seek_force = params.get("seek_force").copied().unwrap_or(1500.0);
-    let flee_force = params.get("flee_force").copied().unwrap_or(2000.0);
-    let strafe_force = params.get("strafe_force").copied().unwrap_or(600.0);
-    let dash_speed = params.get("dash_speed").copied().unwrap_or(0.0);
-    let dash_duration = params.get("dash_duration").copied().unwrap_or(1.8);
-    let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(0.0);
+    // Pursuit force used while inside the flee/seek band.
+    let mid_seek_force = params
+        .get("mid_seek_force")
+        .copied()
+        .unwrap_or(seek_force * 0.65)
+        .max(0.0);
+    // Dash defaults follow JS dash() defaults closely:
+    // dashSpeed=1200, dashDuration=0.2, dashMCd=1
+    let dash_speed = params.get("dash_speed").copied().unwrap_or(1200.0).max(0.0);
+    let dash_duration = params.get("dash_duration").copied().unwrap_or(0.2).max(0.0);
+    let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(1.0).max(0.0);
+    // If > 0, cap total dash displacement per dash regardless of speed/duration tuning.
+    let dash_max_distance = params.get("dash_max_distance").copied().unwrap_or(0.0).max(0.0);
+    // Scales discrete random input axis values: {-1,0,1} * dash_input_scale.
+    let dash_input_scale = params
+        .get("dash_input_scale")
+        .copied()
+        .unwrap_or(1.0)
+        .max(0.0);
+    // 0..1 bias of dash heading toward current target (higher = more chase-oriented dashes).
+    let dash_target_bias = params
+        .get("dash_target_bias")
+        .copied()
+        .unwrap_or(0.6)
+        .clamp(0.0, 1.0);
+    // If 0, reroll a few times to avoid a zero dash vector.
+    let dash_allow_zero = params.get("dash_allow_zero").copied().unwrap_or(0.0) > 0.5;
+    // Heading smoothing between dash bursts (0 = instant, 0.9 = very inertial).
+    let dash_turn_smoothing = params
+        .get("dash_turn_smoothing")
+        .copied()
+        .unwrap_or(0.6)
+        .clamp(0.0, 0.95);
+    // Max heading change allowed at each new dash (radians).
+    let dash_max_turn = params
+        .get("dash_max_turn")
+        .copied()
+        .unwrap_or(std::f32::consts::FRAC_PI_2)
+        .max(0.0);
+    // When 0, dash displacement is isolated (prevents seek/flee overshooting during dashes).
+    let steer_while_dashing = params
+        .get("steer_while_dashing")
+        .copied()
+        .unwrap_or(0.0)
+        > 0.5;
+    // Optional multiplier for seek/flee acceleration band.
+    let move_force_scale = params.get("move_force_scale").copied().unwrap_or(1.0).max(0.0);
+    let was_dashing = behavior.timer > 0.0;
 
-    if let Some(target) = entity.current_target.as_ref().map(Target::position) {
-        let to_target = target - entity.pos;
-        let dist = to_target.length();
-        if dist <= flee_range && dist > 0.0001 {
-            entity.vel += -(to_target / dist) * flee_force;
-        } else if dist >= seek_range && dist > 0.0001 {
-            entity.vel += (to_target / dist) * seek_force;
-        } else if dist > 0.0001 {
-            // Prevent idle in neutral band by strafing around the player.
-            let toward = to_target / dist;
-            let strafe_sign = if entity.uid % 2 == 0 { 1.0 } else { -1.0 };
-            let strafe = vec2(-toward.y, toward.x) * strafe_sign;
-            entity.vel += strafe * strafe_force;
+    if !was_dashing || steer_while_dashing {
+        if let Some(target) = entity.current_target.as_ref().map(Target::position) {
+            let to_target = target - entity.pos;
+            let dist = to_target.length();
+            if dist > 0.0001 {
+                let toward = to_target / dist;
+                if dist <= flee_range {
+                    entity.vel += -toward * flee_force * move_force_scale;
+                } else if dist >= seek_range {
+                    entity.vel += toward * seek_force * move_force_scale;
+                } else {
+                    entity.vel += toward * mid_seek_force * move_force_scale;
+                }
+            }
         }
     }
 
@@ -563,22 +745,126 @@ pub fn movement_virabird_ai(
     }
 
     if behavior.timer <= 0.0 && behavior.cooldown <= 0.0 {
-        let rx = macroquad::rand::gen_range(0i32, 2i32) - macroquad::rand::gen_range(0i32, 2i32);
-        let ry = macroquad::rand::gen_range(0i32, 2i32) - macroquad::rand::gen_range(0i32, 2i32);
-        let dash_dir = vec2(rx as f32, ry as f32);
-        behavior.dir = if dash_dir.length_squared() > 0.0001 {
-            dash_dir.normalize()
-        } else {
-            Vec2::ZERO
-        };
+        let mut dash_dir = Vec2::ZERO;
+        for _ in 0..4 {
+            let rx =
+                macroquad::rand::gen_range(0i32, 2i32) - macroquad::rand::gen_range(0i32, 2i32);
+            let ry =
+                macroquad::rand::gen_range(0i32, 2i32) - macroquad::rand::gen_range(0i32, 2i32);
+            dash_dir = vec2(rx as f32, ry as f32) * dash_input_scale;
+            if dash_allow_zero || dash_dir.length_squared() > 0.0001 {
+                break;
+            }
+        }
+        if !dash_allow_zero && dash_dir.length_squared() <= 0.0001 {
+            let angle = macroquad::rand::gen_range(0.0, std::f32::consts::TAU);
+            dash_dir = vec2(angle.cos(), angle.sin()) * dash_input_scale.max(1.0);
+        }
+        if dash_target_bias > 0.0 {
+            if let Some(target) = entity.current_target.as_ref().map(Target::position) {
+                let toward = (target - entity.pos).normalize_or_zero();
+                if toward.length_squared() > 0.0001 {
+                    let random_n = dash_dir.normalize_or_zero();
+                    let guided = (random_n * (1.0 - dash_target_bias) + toward * dash_target_bias)
+                        .normalize_or_zero();
+                    if guided.length_squared() > 0.0001 {
+                        dash_dir = guided;
+                    }
+                }
+            }
+        }
+
+        let mut dash_dir = dash_dir.normalize_or_zero();
+        if behavior.dir.length_squared() > 0.0001 && dash_dir.length_squared() > 0.0001 {
+            let blended = (behavior.dir * dash_turn_smoothing
+                + dash_dir * (1.0 - dash_turn_smoothing))
+                .normalize_or_zero();
+            let target_dir = if blended.length_squared() > 0.0001 {
+                blended
+            } else {
+                dash_dir
+            };
+            dash_dir = rotate_towards_dir(behavior.dir, target_dir, dash_max_turn);
+        }
+        behavior.dir = dash_dir;
         behavior.timer = dash_duration;
         behavior.cooldown = cooldown_with_erratic(entity, dash_cooldown);
     }
 
     if behavior.timer > 0.0 {
-        // Match old JS dash behavior: move position directly while dashing.
-        entity.pos += behavior.dir * dash_speed * dt;
+        // Match JS dash behavior: direct positional impulse during dash window.
+        let effective_dash_speed = if dash_max_distance > 0.0 && dash_duration > 0.0 {
+            dash_speed.min(dash_max_distance / dash_duration)
+        } else {
+            dash_speed
+        };
+        entity.pos += behavior.dir * effective_dash_speed * dt;
     }
+}
 
-    // Projectile shooting is not implemented in this runtime yet.
+pub fn movement_virabird_ai(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    movement_bird_ai(entity, behavior, dt, params, ctx);
+}
+
+pub fn movement_bird_orbit(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    _ctx: &EntityContext,
+) {
+    let orbit_speed = params.get("orbit_speed").copied().unwrap_or(1200.0);
+    let orbit_radius = params.get("orbit_radius").copied().unwrap_or(80.0);
+    let erratic_factor = params.get("erratic_factor").copied().unwrap_or(0.8);
+
+    // Track orbit direction (alternates for more erratic behavior)
+    if behavior.timer <= 0.0 {
+        behavior.timer = 1.0;
+        // Randomly flip orbit direction occasionally
+        if macroquad::rand::gen_range(0, 10) < 3 {
+            behavior.dir = -behavior.dir;
+        }
+    }
+    behavior.timer -= dt;
+
+    if let Some(target) = entity.current_target.as_ref().map(Target::position) {
+        let to_target = target - entity.pos;
+        let dist = to_target.length();
+
+        if dist > 0.0001 {
+            let toward = to_target / dist;
+            
+            // Calculate tangent (perpendicular to direction to target)
+            // This creates the orbital motion
+            let tangent = vec2(-toward.y, toward.x);
+            
+            // Main orbital velocity
+            let orbit_vel = tangent * orbit_speed * behavior.dir;
+            
+            // Erratic random movement
+            let erratic = vec2(
+                macroquad::rand::gen_range(-1.0, 1.0),
+                macroquad::rand::gen_range(-1.0, 1.0),
+            ) * erratic_factor * orbit_speed;
+            
+            // Apply velocity
+            entity.vel += orbit_vel + erratic;
+            
+            // Distance correction - maintain orbit radius
+            let radius_diff = dist - orbit_radius;
+            if radius_diff > 5.0 {
+                // Too far - move closer
+                entity.vel += toward * orbit_speed * 0.5;
+            } else if radius_diff < -5.0 {
+                // Too close - back away
+                entity.vel += -toward * orbit_speed * 0.5;
+            }
+        }
+    }
 }

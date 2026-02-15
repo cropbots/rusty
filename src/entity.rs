@@ -349,9 +349,14 @@ pub struct EntityInstance {
     pub dash_trail: Option<ParticleEmitter>,
     pub dealt_damage_last_tick: bool,
     dealt_damage_pending: bool,
+    dash_cooldown_memory: HashMap<String, f32>,
 }
 
 impl EntityInstance {
+    fn is_dash_cooldown_behavior(name: &str) -> bool {
+        name == "dash_at_target" || name == "curve_dash_at_target"
+    }
+
     pub fn update(
         &mut self,
         dt: f32,
@@ -363,6 +368,10 @@ impl EntityInstance {
         // One-tick pulse for `dealt_damage` condition.
         self.dealt_damage_last_tick = self.dealt_damage_pending;
         self.dealt_damage_pending = false;
+        for cooldown in self.dash_cooldown_memory.values_mut() {
+            *cooldown = (*cooldown - dt).max(0.0);
+        }
+        self.dash_cooldown_memory.retain(|_, cooldown| *cooldown > 0.0);
         self.vel = Vec2::ZERO;
         let def_flags = db.entities[self.def].flags;
         let dynamic_targeting = (def_flags & DEF_FLAG_DYNAMIC_TARGETING) != 0;
@@ -406,14 +415,28 @@ impl EntityInstance {
             {
                 synced.push(existing.remove(index));
             } else {
+                let restored_cooldown = if Self::is_dash_cooldown_behavior(&desired.name) {
+                    self.dash_cooldown_memory
+                        .get(&desired.name)
+                        .copied()
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 synced.push(BehaviorRuntime {
                     name: desired.name.clone(),
                     func: registry.resolve(&desired.name),
                     params: desired.params.clone(),
                     timer: 0.0,
                     dir: Vec2::ZERO,
-                    cooldown: 0.0,
+                    cooldown: restored_cooldown,
                 });
+            }
+        }
+        for stale in existing {
+            if Self::is_dash_cooldown_behavior(&stale.name) && stale.cooldown > 0.0 {
+                self.dash_cooldown_memory
+                    .insert(stale.name.clone(), stale.cooldown);
             }
         }
         self.behaviors = synced;
@@ -424,22 +447,47 @@ impl EntityInstance {
             let params = std::mem::take(&mut behavior.params);
             (func)(self, behavior, dt, &params, ctx);
             behavior.params = params;
+            if Self::is_dash_cooldown_behavior(&behavior.name) && behavior.cooldown > 0.0 {
+                self.dash_cooldown_memory
+                    .insert(behavior.name.clone(), behavior.cooldown);
+            }
         }
         self.behaviors = behaviors;
 
         let mut max_speed = self.speed.max(1.0);
         for behavior in self.behaviors.iter() {
-            if (behavior.name != "dash_at_target" && behavior.name != "curve_dash_at_target")
-                || behavior.timer <= 0.0
+            if (behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target")
+                && behavior.timer > 0.0
             {
+                let dash_speed = behavior
+                    .params
+                    .get("dash_speed")
+                    .copied()
+                    .unwrap_or(2200.0);
+                max_speed = max_speed.max(dash_speed.abs());
                 continue;
             }
-            let dash_speed = behavior
-                .params
-                .get("dash_speed")
-                .copied()
-                .unwrap_or(2200.0);
-            max_speed = max_speed.max(dash_speed.abs());
+            if behavior.name == "bird_ai" || behavior.name == "virabird_ai" {
+                let seek_force = behavior.params.get("seek_force").copied().unwrap_or(1500.0);
+                let flee_force = behavior.params.get("flee_force").copied().unwrap_or(1000.0);
+                let mid_seek_force = behavior
+                    .params
+                    .get("mid_seek_force")
+                    .copied()
+                    .unwrap_or(seek_force * 0.65);
+                let move_force_scale = behavior
+                    .params
+                    .get("move_force_scale")
+                    .copied()
+                    .unwrap_or(1.0)
+                    .abs();
+                let move_max_speed = behavior
+                    .params
+                    .get("move_max_speed")
+                    .copied()
+                    .unwrap_or(seek_force.max(flee_force).max(mid_seek_force) * move_force_scale);
+                max_speed = max_speed.max(move_max_speed.abs());
+            }
         }
         let speed = self.vel.length();
         if speed > max_speed {
@@ -455,7 +503,14 @@ impl EntityInstance {
             ctx,
             &mut self.dynamic_collision_scratch,
         );
-        if def.collides || !self.dynamic_collision_scratch.is_empty() {
+        let phasing_dash_active = self.behaviors.iter().any(|behavior| {
+            (behavior.name == "dash_at_target"
+                || behavior.name == "curve_dash_at_target")
+                && behavior.timer > 0.0
+        });
+        if phasing_dash_active {
+            self.pos += self.vel * dt;
+        } else if def.collides || !self.dynamic_collision_scratch.is_empty() {
             let mut pos = self.pos;
             let mut vel = self.vel;
 
@@ -530,6 +585,7 @@ impl EntityInstance {
         self.behaviors.iter().any(|behavior| {
             (behavior.name == "dash_at_target"
                 || behavior.name == "curve_dash_at_target"
+                || behavior.name == "bird_ai"
                 || behavior.name == "virabird_ai")
                 && behavior.timer > 0.0
         })
@@ -603,7 +659,22 @@ impl EntityInstance {
         let hb = db.entities[self.def].world_hitbox(self.pos);
         if hb.overlaps(&target_hitbox) {
             ctx.damage_events.push(DamageEvent { amount: damage, target });
-            self.contact_cooldown = 0.3;
+            let mut hit_cooldown = 0.3f32;
+            for behavior in &self.behaviors {
+                let is_dash = behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target";
+                if !is_dash || behavior.timer <= 0.0 {
+                    continue;
+                }
+                let dash_hit_cd = behavior
+                    .params
+                    .get("dash_hit_cooldown")
+                    .copied()
+                    .or_else(|| behavior.params.get("dash_cooldown").copied())
+                    .unwrap_or(0.3)
+                    .max(0.0);
+                hit_cooldown = hit_cooldown.max(dash_hit_cd);
+            }
+            self.contact_cooldown = hit_cooldown;
             self.dealt_damage_pending = true;
         }
     }
@@ -628,6 +699,12 @@ impl MovementRegistry {
         registry.register("seek_nearest_misc", movement_seek_nearest_misc);
         registry.register("seek_player", movement_seek_player);
         registry.register("flee", movement_flee);
+        registry.register("watch", movement_watch);
+        registry.register("watch_nearest_entity", movement_watch_nearest_entity);
+        registry.register("watch_nearest_enemy", movement_watch_nearest_enemy);
+        registry.register("watch_nearest_friend", movement_watch_nearest_friend);
+        registry.register("watch_nearest_misc", movement_watch_nearest_misc);
+        registry.register("watch_player", movement_watch_player);
         registry.register("flee_nearest_entity", movement_flee_nearest_entity);
         registry.register("flee_nearest_enemy", movement_flee_nearest_enemy);
         registry.register("flee_nearest_friend", movement_flee_nearest_friend);
@@ -635,7 +712,9 @@ impl MovementRegistry {
         registry.register("flee_player", movement_flee_player);
         registry.register("dash_at_target", movement_dash_at_target);
         registry.register("curve_dash_at_target", movement_curve_dash_at_target);
+        registry.register("bird_ai", movement_bird_ai);
         registry.register("virabird_ai", movement_virabird_ai);
+        registry.register("bird_orbit", movement_bird_orbit);
         registry.register("rebound", movement_rebound);
         registry
     }
@@ -1020,6 +1099,7 @@ impl EntityDatabase {
             dash_trail: None,
             dealt_damage_last_tick: false,
             dealt_damage_pending: false,
+            dash_cooldown_memory: HashMap::new(),
         })
     }
 }
