@@ -71,6 +71,8 @@ pub const DEF_FLAG_NO_ENEMY_COLLISION: u16 = 1 << 6;
 pub const DEF_FLAG_NO_FRIEND_COLLISION: u16 = 1 << 7;
 pub const DEF_FLAG_NO_MISC_COLLISION: u16 = 1 << 8;
 pub const DEF_FLAG_NO_PLAYER_COLLISION: u16 = 1 << 9;
+pub const DEF_FLAG_DYNAMIC_TARGETING: u16 = 1 << 10;
+pub const DEF_FLAG_ERRATIC: u16 = 1 << 11;
 
 impl EntityKind {
     fn from_dir(name: &str) -> Option<Self> {
@@ -123,11 +125,22 @@ pub struct BehaviorDef {
 pub enum BehaviorNode {
     Selector { children: Vec<BehaviorNode> },
     Sequence { children: Vec<BehaviorNode> },
-    Condition { name: String, value: Option<f32> },
+    Condition {
+        name: String,
+        value: Option<f32>,
+        #[serde(default)]
+        always: bool,
+    },
+    NotCondition {
+        name: String,
+        value: Option<f32>,
+        #[serde(default)]
+        always: bool,
+    },
     Action {
         name: String,
         #[serde(default)]
-        multiple: bool,
+        always: bool,
         #[serde(default)]
         params: MovementParams,
         #[serde(flatten)]
@@ -323,6 +336,7 @@ pub struct EntityInstance {
     pub pos: Vec2,
     pub vel: Vec2,
     pub speed: f32,
+    pub flags: u16,
     pub behaviors: Vec<BehaviorRuntime>,
     pub stats: StatBlock,
     pub hp: f32,
@@ -330,8 +344,11 @@ pub struct EntityInstance {
     pub collision_scratch: Vec<Rect>,
     pub dynamic_collision_scratch: Vec<Rect>,
     pub current_target: Option<Target>,
+    pub dynamic_target_timer: f32,
     pub contact_cooldown: f32,
     pub dash_trail: Option<ParticleEmitter>,
+    pub dealt_damage_last_tick: bool,
+    dealt_damage_pending: bool,
 }
 
 impl EntityInstance {
@@ -343,8 +360,23 @@ impl EntityInstance {
         map: &crate::map::TileMap,
         registry: &MovementRegistry,
     ) {
+        // One-tick pulse for `dealt_damage` condition.
+        self.dealt_damage_last_tick = self.dealt_damage_pending;
+        self.dealt_damage_pending = false;
         self.vel = Vec2::ZERO;
-        self.current_target = ctx.resolve_target(db, self);
+        let def_flags = db.entities[self.def].flags;
+        let dynamic_targeting = (def_flags & DEF_FLAG_DYNAMIC_TARGETING) != 0;
+        let mut force_retarget = false;
+        if dynamic_targeting {
+            self.dynamic_target_timer -= dt;
+            if self.dynamic_target_timer <= 0.0 {
+                self.dynamic_target_timer = 0.5;
+                force_retarget = true;
+            }
+        } else {
+            self.dynamic_target_timer = 0.0;
+        }
+        self.current_target = ctx.resolve_target(db, self, dynamic_targeting, force_retarget);
         if self.contact_cooldown > 0.0 {
             self.contact_cooldown = (self.contact_cooldown - dt).max(0.0);
         }
@@ -397,15 +429,17 @@ impl EntityInstance {
 
         let mut max_speed = self.speed.max(1.0);
         for behavior in self.behaviors.iter() {
-            if behavior.name != "dash_at_target" || behavior.timer <= 0.0 {
+            if (behavior.name != "dash_at_target" && behavior.name != "curve_dash_at_target")
+                || behavior.timer <= 0.0
+            {
                 continue;
             }
-                let dash_speed = behavior
-                    .params
-                    .get("dash_speed")
-                    .copied()
-                    .unwrap_or(2200.0);
-                max_speed = max_speed.max(dash_speed.abs());
+            let dash_speed = behavior
+                .params
+                .get("dash_speed")
+                .copied()
+                .unwrap_or(2200.0);
+            max_speed = max_speed.max(dash_speed.abs());
         }
         let speed = self.vel.length();
         if speed > max_speed {
@@ -493,13 +527,12 @@ impl EntityInstance {
     }
 
     pub fn is_dashing(&self) -> bool {
-        self.behaviors
-            .first()
-            .map(|behavior| {
-                (behavior.name == "dash_at_target" || behavior.name == "virabird_ai")
-                    && behavior.timer > 0.0
-            })
-            .unwrap_or(false)
+        self.behaviors.iter().any(|behavior| {
+            (behavior.name == "dash_at_target"
+                || behavior.name == "curve_dash_at_target"
+                || behavior.name == "virabird_ai")
+                && behavior.timer > 0.0
+        })
     }
 
     fn apply_contact_damage(&mut self, ctx: &mut EntityContext, db: &EntityDatabase) {
@@ -571,6 +604,7 @@ impl EntityInstance {
         if hb.overlaps(&target_hitbox) {
             ctx.damage_events.push(DamageEvent { amount: damage, target });
             self.contact_cooldown = 0.3;
+            self.dealt_damage_pending = true;
         }
     }
 }
@@ -588,9 +622,21 @@ impl MovementRegistry {
         registry.register("idle", movement_idle);
         registry.register("wander", movement_wander);
         registry.register("seek", movement_seek);
+        registry.register("seek_nearest_entity", movement_seek_nearest_entity);
+        registry.register("seek_nearest_enemy", movement_seek_nearest_enemy);
+        registry.register("seek_nearest_friend", movement_seek_nearest_friend);
+        registry.register("seek_nearest_misc", movement_seek_nearest_misc);
+        registry.register("seek_player", movement_seek_player);
         registry.register("flee", movement_flee);
+        registry.register("flee_nearest_entity", movement_flee_nearest_entity);
+        registry.register("flee_nearest_enemy", movement_flee_nearest_enemy);
+        registry.register("flee_nearest_friend", movement_flee_nearest_friend);
+        registry.register("flee_nearest_misc", movement_flee_nearest_misc);
+        registry.register("flee_player", movement_flee_player);
         registry.register("dash_at_target", movement_dash_at_target);
+        registry.register("curve_dash_at_target", movement_curve_dash_at_target);
         registry.register("virabird_ai", movement_virabird_ai);
+        registry.register("rebound", movement_rebound);
         registry
     }
 
@@ -620,7 +666,13 @@ pub struct EntityContext {
 }
 
 impl EntityContext {
-    fn resolve_target(&mut self, db: &EntityDatabase, entity: &EntityInstance) -> Option<Target> {
+    fn resolve_target(
+        &mut self,
+        db: &EntityDatabase,
+        entity: &EntityInstance,
+        dynamic_targeting: bool,
+        force_retarget: bool,
+    ) -> Option<Target> {
         if let Some(target) = self.target {
             return Some(target);
         }
@@ -666,6 +718,86 @@ impl EntityContext {
         if mask == 0 {
             return None;
         }
+
+        let is_current_target_valid = |target: Target| match target {
+            Target::Position(_) => false,
+            Target::Player(_) => target_player && self.player.is_some(),
+            Target::Entity(target_entity) => self.entities.iter().any(|candidate| {
+                candidate.id == target_entity.id
+                    && candidate.alive
+                    && is_kind_targetable(candidate.kind)
+            }),
+        };
+
+        if dynamic_targeting {
+            if !force_retarget {
+                if let Some(current) = entity.current_target {
+                    if is_current_target_valid(current) {
+                        return Some(current);
+                    }
+                }
+            }
+            if let Some(current) = entity.current_target {
+                if matches!(current, Target::Player(_)) && target_player && self.player.is_some() {
+                    return Some(current);
+                }
+            }
+            let mut modes = Vec::new();
+            if target_any {
+                modes.push(0u8);
+            }
+            if target_enemy {
+                modes.push(1u8);
+            }
+            if target_friend {
+                modes.push(2u8);
+            }
+            if target_misc {
+                modes.push(3u8);
+            }
+            if modes.is_empty() {
+                return None;
+            }
+            let selected_mode = if modes.len() == 1 {
+                modes[0]
+            } else {
+                let idx = macroquad::rand::gen_range(0usize, modes.len());
+                modes[idx]
+            };
+
+            let current_id = match entity.current_target {
+                Some(Target::Entity(t)) => Some(t.id),
+                _ => None,
+            };
+            let mode_accepts = |kind: EntityKind| match selected_mode {
+                0 => is_kind_targetable(kind),
+                1 => kind == EntityKind::Enemy && is_kind_targetable(kind),
+                2 => kind == EntityKind::Friend && is_kind_targetable(kind),
+                3 => kind == EntityKind::Misc && is_kind_targetable(kind),
+                _ => false,
+            };
+            let pick_nearest = |exclude_current: bool| -> Option<EntityTarget> {
+                let mut best: Option<(f32, EntityTarget)> = None;
+                for candidate in &self.entities {
+                    if candidate.id == entity.uid || !candidate.alive || !mode_accepts(candidate.kind) {
+                        continue;
+                    }
+                    if exclude_current && current_id == Some(candidate.id) {
+                        continue;
+                    }
+                    let dist_sq = entity.pos.distance_squared(candidate.pos);
+                    match best {
+                        Some((best_dist, _)) if dist_sq >= best_dist => {}
+                        _ => best = Some((dist_sq, *candidate)),
+                    }
+                }
+                best.map(|(_, target)| target)
+            };
+
+            let resolved = pick_nearest(true).or_else(|| pick_nearest(false));
+            return resolved.map(Target::Entity);
+        }
+
         if let Some(cached) = self.target_cache.get(&(entity.uid, mask)).copied() {
             if let Some(cached_target) = cached {
                 let current_target = self
@@ -875,6 +1007,7 @@ impl EntityDatabase {
             pos,
             vel: Vec2::ZERO,
             speed: stats.get("speed", def.speed).max(1.0),
+            flags: def.flags,
             behaviors,
             stats,
             hp: max_hp,
@@ -882,8 +1015,11 @@ impl EntityDatabase {
             collision_scratch: Vec::with_capacity(25),
             dynamic_collision_scratch: Vec::with_capacity(25),
             current_target: None,
+            dynamic_target_timer: 0.0,
             contact_cooldown: 0.0,
             dash_trail: None,
+            dealt_damage_last_tick: false,
+            dealt_damage_pending: false,
         })
     }
 }
@@ -968,6 +1104,12 @@ struct SelectedAction {
     params: MovementParams,
 }
 
+struct EvalResult {
+    primary: Option<SelectedAction>,
+    extras: Vec<SelectedAction>,
+    ok: bool,
+}
+
 fn action_params(params: &MovementParams, extra: &HashMap<String, YamlValue>) -> MovementParams {
     let mut merged = params.clone();
     for (key, value) in extra {
@@ -986,11 +1128,11 @@ fn eval_behavior(
     node: &BehaviorNode,
     entity: &EntityInstance,
     ctx: &EntityContext,
-) -> (Option<SelectedAction>, Vec<SelectedAction>, bool) {
+) -> EvalResult {
     match node {
         BehaviorNode::Action {
             name,
-            multiple,
+            always,
             params,
             extra,
         } => {
@@ -998,46 +1140,78 @@ fn eval_behavior(
                 name: name.clone(),
                 params: action_params(params, extra),
             };
-            let mut multi = Vec::new();
-            if *multiple {
-                multi.push(SelectedAction {
-                    name: action.name.clone(),
-                    params: action.params.clone(),
-                });
+            if *always {
+                EvalResult {
+                    primary: None,
+                    extras: vec![action],
+                    ok: true,
+                }
+            } else {
+                EvalResult {
+                    primary: Some(action),
+                    extras: Vec::new(),
+                    ok: true,
+                }
             }
-            (Some(action), multi, true)
         }
-        BehaviorNode::Condition { name, value } => (None, Vec::new(), eval_condition(name, *value, entity, ctx)),
+        BehaviorNode::Condition { name, value, always } => {
+            let passed = eval_condition(name, *value, entity, ctx);
+            EvalResult {
+                primary: None,
+                extras: Vec::new(),
+                ok: if *always { true } else { passed },
+            }
+        }
+        BehaviorNode::NotCondition { name, value, always } => {
+            let passed = !eval_condition(name, *value, entity, ctx);
+            EvalResult {
+                primary: None,
+                extras: Vec::new(),
+                ok: if *always { true } else { passed },
+            }
+        }
         BehaviorNode::Sequence { children } => {
             let mut action = None;
-            let mut multiple_actions = Vec::new();
+            let mut extras = Vec::new();
             for child in children {
-                let (child_action, child_multiple, ok) = eval_behavior(child, entity, ctx);
-                if !ok {
-                    return (None, Vec::new(), false);
+                let child_result = eval_behavior(child, entity, ctx);
+                extras.extend(child_result.extras);
+                if !child_result.ok {
+                    return EvalResult {
+                        primary: None,
+                        extras,
+                        ok: false,
+                    };
                 }
-                if child_action.is_some() {
-                    action = child_action;
+                if child_result.primary.is_some() {
+                    action = child_result.primary;
                 }
-                multiple_actions.extend(child_multiple);
             }
-            (action, multiple_actions, true)
+            EvalResult {
+                primary: action,
+                extras,
+                ok: true,
+            }
         }
         BehaviorNode::Selector { children } => {
             let mut primary: Option<SelectedAction> = None;
-            let mut multiple_actions = Vec::new();
+            let mut extras = Vec::new();
             let mut any_ok = false;
             for child in children {
-                let (child_action, child_multiple, ok) = eval_behavior(child, entity, ctx);
-                if ok {
+                let child_result = eval_behavior(child, entity, ctx);
+                if child_result.ok {
                     any_ok = true;
-                    if primary.is_none() {
-                        primary = child_action;
+                    if primary.is_none() && child_result.primary.is_some() {
+                        primary = child_result.primary;
                     }
-                    multiple_actions.extend(child_multiple);
+                    extras.extend(child_result.extras);
                 }
             }
-            (primary, multiple_actions, any_ok)
+            EvalResult {
+                primary,
+                extras,
+                ok: any_ok,
+            }
         }
     }
 }
@@ -1047,16 +1221,18 @@ fn select_actions(
     entity: &EntityInstance,
     ctx: &EntityContext,
 ) -> Vec<SelectedAction> {
-    let (primary, multiple, ok) = eval_behavior(node, entity, ctx);
+    let result = eval_behavior(node, entity, ctx);
+    let primary = result.primary;
+    let ok = result.ok;
     if !ok {
-        return Vec::new();
+        return result.extras;
     }
 
     let mut out = Vec::new();
     if let Some(primary) = primary {
         out.push(primary);
     }
-    for action in multiple {
+    for action in result.extras {
         let duplicate = out
             .iter()
             .any(|existing| existing.name == action.name && existing.params == action.params);
@@ -1068,14 +1244,41 @@ fn select_actions(
 }
 
 fn eval_condition(name: &str, value: Option<f32>, entity: &EntityInstance, ctx: &EntityContext) -> bool {
+    let range = value.unwrap_or(1.0).max(0.0) * ctx.view_height.max(1.0);
+    let in_range_sq = range * range;
+    let any_kind_in_range = |kind: Option<EntityKind>| {
+        ctx.entities.iter().any(|candidate| {
+            if candidate.id == entity.uid || !candidate.alive {
+                return false;
+            }
+            if let Some(expected) = kind {
+                if candidate.kind != expected {
+                    return false;
+                }
+            }
+            entity.pos.distance_squared(candidate.pos) <= in_range_sq
+        })
+    };
+
     match name {
         "target_in_range" => {
             let Some(target) = entity.current_target.as_ref().map(Target::position) else {
                 return false;
             };
-            let range = value.unwrap_or(1.0).max(0.0) * ctx.view_height.max(1.0);
             entity.pos.distance(target) <= range
         }
+        "player_in_range" => ctx
+            .player
+            .map(|player| entity.pos.distance_squared(player.pos) <= in_range_sq)
+            .unwrap_or(false),
+        "entity_in_range" => any_kind_in_range(None),
+        "enemy_in_range" => any_kind_in_range(Some(EntityKind::Enemy)),
+        "friend_in_range" => any_kind_in_range(Some(EntityKind::Friend)),
+        "misc_in_range" => any_kind_in_range(Some(EntityKind::Misc)),
+        "has_target" => entity.current_target.is_some(),
+        "dealt_damage" => {
+            entity.dealt_damage_last_tick
+        },
         _ => false,
     }
 }
@@ -1100,7 +1303,7 @@ fn first_action_with_registry<'a>(
             }
             None
         }
-        BehaviorNode::Condition { .. } => None,
+        BehaviorNode::Condition { .. } | BehaviorNode::NotCondition { .. } => None,
     }
 }
 
@@ -1162,6 +1365,12 @@ fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef])
     }
     if trait_indices_have_flag(trait_indices, traits, "no_player_collision") {
         flags |= DEF_FLAG_NO_PLAYER_COLLISION;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "dynamic_targeting") {
+        flags |= DEF_FLAG_DYNAMIC_TARGETING;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "erratic") {
+        flags |= DEF_FLAG_ERRATIC;
     }
 
     flags

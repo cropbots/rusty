@@ -1,12 +1,13 @@
 id: chopbot
 traits:
+  - dynamic_targeting
   - target_nearest_enemy
-  - no_map_collision
   - no_player_collision
+  - erratic
 stats:
-  hp: 5
-  speed: 200
-  damage: 1
+  hp: 5 
+  speed: 750
+  damage: 0.5
 visuals:
   sprite: "src/assets/objects/chopbot.png"
   draw_params:
@@ -19,8 +20,8 @@ visuals:
     color: [255, 255, 255, 255]
     offset: [0, 0]
 hitbox:
-  x: 0
-  y: 0
+  x: 11.16
+  y: 10
   w: 11.16
   h: 10
 behavior:
@@ -29,11 +30,52 @@ behavior:
     - type: sequence
       children:
         - type: condition
+          name: dealt_damage
+        - type: action
+          name: rebound
+          params:
+            speed: 1500
+            duration: 0.2
+          always: true
+    - type: sequence
+      children:
+        - type: condition
           name: target_in_range
           value: 0.25 # the viewport is 1.0 in width and height
         - type: action
-          name: dash_at_target
+          name: curve_dash_at_target
           params:
-            cooldown: 1.0
-    - type: action
-      name: seek
+            dash_cooldown: 1.0
+            arc_strength: 0.1
+            dash_speed: 500
+            dash_duration: 0.4
+    - type: sequence
+      children:
+        - type: condition
+          name: target_in_range
+          value: 1.5 # the viewport is 1.0 in width and height
+        - type: action
+          name: seek
+    - type: sequence
+      children:
+        - type: not_condition
+          name: has_target
+        - type: condition
+          name: player_in_range
+          value: 0.75
+        - type: action
+          name: wander
+          params:
+            speed: 50
+    - type: sequence
+      children:
+        - type: not_condition
+          name: has_target
+        - type: not_condition
+          name: player_in_range
+          value: 0.75
+        - type: action
+          name: seek_player
+          params:
+            speed: 500
+          always: true
