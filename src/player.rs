@@ -20,7 +20,7 @@ pub struct Player {
 
 impl Player {
     pub fn new(pos: Vec2, texture: Texture2D, hitbox: Rect) -> Self {
-        let max_hp = 1000.0;
+        let max_hp = 50.0;
         Self {
             pos,
             vel: Vec2::ZERO,
@@ -110,39 +110,35 @@ impl Player {
         let mut vel = self.vel;
 
         pos.x += vel.x * dt;
-        if !self.is_dashing() {
-            let probe = hitbox_center_world(pos, self.hitbox);
-            if let Some(grid) = map.grid_index(probe) {
-                let radius = collision_radius(map, vel, dt);
-                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
-                let (resolved, vx) = resolve_collisions_axis(
-                    self.hitbox,
-                    pos,
-                    vel.x,
-                    &self.collision_scratch,
-                    Axis::X,
-                );
-                pos = resolved;
-                vel.x = vx;
-            }
+        let probe = hitbox_center_world(pos, self.hitbox);
+        if let Some(grid) = map.grid_index(probe) {
+            let radius = collision_radius(map, vel, dt);
+            map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+            let (resolved, vx) = resolve_collisions_axis(
+                self.hitbox,
+                pos,
+                vel.x,
+                &self.collision_scratch,
+                Axis::X,
+            );
+            pos = resolved;
+            vel.x = vx;
         }
 
         pos.y += vel.y * dt;
-        if !self.is_dashing() {
-            let probe = hitbox_center_world(pos, self.hitbox);
-            if let Some(grid) = map.grid_index(probe) {
-                let radius = collision_radius(map, vel, dt);
-                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
-                let (resolved, vy) = resolve_collisions_axis(
-                    self.hitbox,
-                    pos,
-                    vel.y,
-                    &self.collision_scratch,
-                    Axis::Y,
-                );
-                pos = resolved;
-                vel.y = vy;
-            }
+        let probe = hitbox_center_world(pos, self.hitbox);
+        if let Some(grid) = map.grid_index(probe) {
+            let radius = collision_radius(map, vel, dt);
+            map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+            let (resolved, vy) = resolve_collisions_axis(
+                self.hitbox,
+                pos,
+                vel.y,
+                &self.collision_scratch,
+                Axis::Y,
+            );
+            pos = resolved;
+            vel.y = vy;
         }
 
         self.pos = pos;
@@ -172,6 +168,14 @@ impl Player {
 
     pub fn position(&self) -> Vec2 {
         self.pos
+    }
+
+    pub fn set_position(&mut self, pos: Vec2) {
+        self.pos = pos;
+        self.vel = Vec2::ZERO;
+        self.dash_timer = 0.0;
+        self.dash_cooldown = 0.0;
+        self.dash_dir = Vec2::ZERO;
     }
 
     pub fn world_hitbox(&self) -> Rect {

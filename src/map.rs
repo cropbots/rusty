@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 use macroquad::file::load_string;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
 
@@ -148,6 +148,14 @@ pub struct Structure {
 }
 
 impl Structure {
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     pub fn random(width: usize, height: usize, tile_count: usize, seed: u32) -> Self {
         let len = width * height;
         let mut background = vec![EMPTY_TILE; len];
@@ -291,6 +299,17 @@ pub struct StructureInteractor {
     pub group_rect: Rect,
     pub on_interact: Vec<String>,
     pub interact_range_world: f32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TileMapSnapshot {
+    pub width: usize,
+    pub height: usize,
+    pub tile_size: f32,
+    pub background: Vec<u8>,
+    pub foreground: Vec<u8>,
+    pub overlay: Vec<u8>,
+    pub collision_mask: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -532,6 +551,7 @@ pub struct TileMap {
     structure_interactors: Vec<StructureInteractor>,
     grid_size: Vec2,
     border_thickness: f32,
+    custom_border_hitbox: Option<Rect>,
 }
 
 impl TileMap {
@@ -601,6 +621,7 @@ impl TileMap {
             structure_interactors: Vec::new(),
             grid_size,
             border_thickness,
+            custom_border_hitbox: None,
         }
     }
 
@@ -643,6 +664,7 @@ impl TileMap {
             structure_interactors: Vec::new(),
             grid_size,
             border_thickness,
+            custom_border_hitbox: None,
         }
     }
 
@@ -672,6 +694,87 @@ impl TileMap {
         let total = (self.chunk_cols * self.chunk_rows).max(1) as f32;
         let done = self.chunks.iter().filter(|chunk| chunk.is_some()).count() as f32;
         (done / total).clamp(0.0, 1.0)
+    }
+
+    pub fn warm_all_chunks_progress(&self) -> f32 {
+        let total_layers = (self.chunks.len().max(1) * 3) as f32;
+        let mut ready_layers = 0usize;
+        for chunk in self.chunks.iter().flatten() {
+            if !chunk.dirty_background && chunk.ready_background {
+                ready_layers += 1;
+            }
+            if !chunk.dirty_foreground && chunk.ready_foreground {
+                ready_layers += 1;
+            }
+            if !chunk.dirty_overlay && chunk.ready_overlay {
+                ready_layers += 1;
+            }
+        }
+        (ready_layers as f32 / total_layers).clamp(0.0, 1.0)
+    }
+
+    pub fn warm_all_chunks_step(&mut self, tileset: &TileSet, time_budget_s: f32) -> bool {
+        let budget = time_budget_s.max(0.0001) as f64;
+        let start = get_time();
+
+        let prev_alloc_budget = self.chunk_alloc_budget_per_frame;
+        let prev_rebuild_budget = self.chunk_rebuild_budget_per_frame;
+        self.chunk_alloc_budget_per_frame = usize::MAX;
+        self.chunk_rebuild_budget_per_frame = usize::MAX;
+        self.chunk_allocs_this_frame = 0;
+        self.chunk_rebuilds_this_frame = 0;
+
+        let mut done = true;
+        'chunk_loop: for chunk_index in 0..self.chunks.len() {
+            if (get_time() - start) >= budget {
+                done = false;
+                break;
+            }
+
+            if self.chunks[chunk_index].is_none() {
+                self.create_chunk(chunk_index);
+            }
+            if self.chunks[chunk_index].is_none() {
+                done = false;
+                break;
+            }
+
+            for layer in [LayerKind::Background, LayerKind::Foreground, LayerKind::Overlay] {
+                if (get_time() - start) >= budget {
+                    done = false;
+                    break 'chunk_loop;
+                }
+
+                let is_dirty = match layer {
+                    LayerKind::Background => self.chunks[chunk_index]
+                        .as_ref()
+                        .map(|c| c.dirty_background)
+                        .unwrap_or(false),
+                    LayerKind::Foreground => self.chunks[chunk_index]
+                        .as_ref()
+                        .map(|c| c.dirty_foreground)
+                        .unwrap_or(false),
+                    LayerKind::Overlay => self.chunks[chunk_index]
+                        .as_ref()
+                        .map(|c| c.dirty_overlay)
+                        .unwrap_or(false),
+                };
+                if is_dirty {
+                    self.rebuild_chunk_layer_if_dirty(chunk_index, layer, tileset);
+                }
+            }
+        }
+
+        if done {
+            done = self.chunks.iter().all(|chunk| match chunk {
+                Some(c) => !c.dirty_background && !c.dirty_foreground && !c.dirty_overlay,
+                None => false,
+            });
+        }
+
+        self.chunk_alloc_budget_per_frame = prev_alloc_budget;
+        self.chunk_rebuild_budget_per_frame = prev_rebuild_budget;
+        done
     }
 
     pub fn set_chunk_work_budget(&mut self, alloc_per_frame: usize, rebuild_per_frame: usize) {
@@ -724,6 +827,9 @@ impl TileMap {
     }
 
     pub fn get_border_hitbox(&self) -> Rect {
+        if let Some(rect) = self.custom_border_hitbox {
+            return rect;
+        }
         let world_w = self.width as f32 * self.tile_size;
         let world_h = self.height as f32 * self.tile_size;
         Rect::new(
@@ -732,6 +838,10 @@ impl TileMap {
             world_w + self.border_thickness * 2.0,
             world_h + self.border_thickness * 2.0,
         )
+    }
+
+    pub fn set_custom_border_hitbox(&mut self, rect: Option<Rect>) {
+        self.custom_border_hitbox = rect;
     }
 
     pub fn draw_background(
@@ -871,6 +981,11 @@ impl TileMap {
             fg_changed,
             ov_changed,
         );
+    }
+
+    pub fn place_structure_def(&mut self, def: &StructureDef, x: usize, y: usize) {
+        self.place_structure(&def.structure, x, y);
+        self.register_structure_interactors(def, x, y);
     }
 
     fn place_structure_unchecked(&mut self, structure: &Structure, x: usize, y: usize) {
@@ -1518,6 +1633,70 @@ impl TileMap {
         self.tile_size
     }
 
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn clear_all_tiles(&mut self) {
+        self.background.fill(EMPTY_TILE);
+        self.foreground.fill(EMPTY_TILE);
+        self.overlay.fill(EMPTY_TILE);
+        self.solid.fill(false);
+        self.collision_mask.fill(0);
+        self.collision_dirty = true;
+        self.structure_apply = None;
+        self.structure_interactors.clear();
+        self.custom_border_hitbox = None;
+        self.mark_all_chunks_dirty_all_layers();
+    }
+
+    pub fn snapshot(&self) -> TileMapSnapshot {
+        TileMapSnapshot {
+            width: self.width,
+            height: self.height,
+            tile_size: self.tile_size,
+            background: self.background.clone(),
+            foreground: self.foreground.clone(),
+            overlay: self.overlay.clone(),
+            collision_mask: self.collision_mask.clone(),
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, snapshot: &TileMapSnapshot) -> Result<(), String> {
+        if snapshot.width != self.width || snapshot.height != self.height {
+            return Err("snapshot dimensions do not match target map".to_string());
+        }
+        if (snapshot.tile_size - self.tile_size).abs() > f32::EPSILON {
+            return Err("snapshot tile_size does not match target map".to_string());
+        }
+        let len = self.width * self.height;
+        if snapshot.background.len() != len
+            || snapshot.foreground.len() != len
+            || snapshot.overlay.len() != len
+            || snapshot.collision_mask.len() != len
+        {
+            return Err("snapshot layer lengths do not match map dimensions".to_string());
+        }
+
+        self.background.clone_from(&snapshot.background);
+        self.foreground.clone_from(&snapshot.foreground);
+        self.overlay.clone_from(&snapshot.overlay);
+        self.collision_mask.clone_from(&snapshot.collision_mask);
+        for (i, mask) in self.collision_mask.iter().enumerate() {
+            self.solid[i] = (*mask & 0x0F) != 0;
+        }
+        self.collision_dirty = true;
+        self.structure_apply = None;
+        self.structure_interactors.clear();
+        self.custom_border_hitbox = None;
+        self.mark_all_chunks_dirty_all_layers();
+        Ok(())
+    }
+
     fn mark_chunks_dirty_rect(
         &mut self,
         x: usize,
@@ -1645,6 +1824,23 @@ impl TileMap {
         }
         if let Some(flag) = self.pending_dirty_overlay.get_mut(chunk_index) {
             *flag = false;
+        }
+    }
+
+    fn mark_all_chunks_dirty_all_layers(&mut self) {
+        for chunk_index in 0..self.chunks.len() {
+            if let Some(chunk) = self.chunks[chunk_index].as_mut() {
+                chunk.dirty_background = true;
+                chunk.dirty_foreground = true;
+                chunk.dirty_overlay = true;
+                chunk.ready_background = false;
+                chunk.ready_foreground = false;
+                chunk.ready_overlay = false;
+            } else {
+                self.pending_dirty_background[chunk_index] = true;
+                self.pending_dirty_foreground[chunk_index] = true;
+                self.pending_dirty_overlay[chunk_index] = true;
+            }
         }
     }
 }

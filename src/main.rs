@@ -14,14 +14,16 @@ mod particle;
 mod tilemap;
 mod sound;
 mod interact;
+mod scene;
 
-use map::{LayerKind, TileMap, TileSet, load_structures_from_dir};
+use map::{TileMap, TileSet, load_structures_from_dir};
 use player::Player;
 use entity::{DamageEvent, Entity, EntityContext, EntityDatabase, MovementRegistry, PlayerTarget, Target};
 
 use sound::SoundSystem;
 use particle::ParticleSystem;
 use interact::{InteractContext, InteractRegistry};
+use scene::SceneKind;
 
 const CAMERA_DRAG: f32 = 5.0;
 const TILE_SIZE: f32 = 16.0;
@@ -30,9 +32,9 @@ const FOOTSTEP_INTERVAL: f32 = 0.2;
 const CAMERA_FOV: f32 = 300.0;
 const ENTITY_CULL_FADE_PAD: f32 = 96.0;
 const LOADING_SPIN_SPEED: f32 = 3.0;
-const STRUCTURE_APPLY_TIME_BUDGET_S: f32 = 0.01;
 const CHUNK_ALLOC_PER_FRAME: usize = 6;
 const CHUNK_REBUILD_PER_FRAME: usize = 8;
+const SCENE_WARM_BUDGET_S: f32 = 0.006;
 
 fn window_conf() -> Conf {
     let icon = load_window_icon(&helpers::asset_path("src/assets/favicon.png"));
@@ -130,6 +132,24 @@ where
     }
 }
 
+async fn warm_scene_chunks_loading(
+    map: &mut TileMap,
+    tileset: &TileSet,
+    loading: &Texture2D,
+    label: &str,
+    loading_spin: &mut f32,
+) {
+    loop {
+        let done = map.warm_all_chunks_step(tileset, SCENE_WARM_BUDGET_S);
+        let progress = map.warm_all_chunks_progress();
+        *loading_spin += LOADING_SPIN_SPEED * get_frame_time();
+        show_loading(loading, label, progress, *loading_spin).await;
+        if done {
+            break;
+        }
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let loading = load_texture(&helpers::asset_path("src/assets/loading.png"))
@@ -154,12 +174,9 @@ async fn main() {
             eprintln!("Please ensure src/assets/tileset.json and src/assets/tileset.png exist");
             panic!("Tileset loading failed");
         });
+    let grass: u8 = if tileset.count() > 24 { 24 } else { 0 };
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.22, loading_spin).await;
-    let mut maps = TileMap::new_deferred(1024, 1024, TILE_SIZE, Vec2::new(TILE_SIZE, TILE_SIZE), 0.0);
-    maps.set_chunk_work_budget(CHUNK_ALLOC_PER_FRAME, CHUNK_REBUILD_PER_FRAME);
-    let grass: u8 = if tileset.count() > 24 { 24 } else { 0 };
-    maps.fill_layer(LayerKind::Background, grass);
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.35, loading_spin).await;
 
@@ -176,13 +193,6 @@ async fn main() {
         eprintln!("structure load failed: {err}");
         Vec::new()
     });
-    if !structures.is_empty() {
-        maps.start_structure_apply(structures, 1337);
-        while !maps.apply_structures_step(STRUCTURE_APPLY_TIME_BUDGET_S) {
-            loading_spin += LOADING_SPIN_SPEED * get_frame_time();
-            show_loading(&loading, "Placing structures", maps.structure_apply_progress() * 0.15 + 0.45, loading_spin).await;
-        }
-    }
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.55, loading_spin).await;
 
@@ -253,36 +263,21 @@ async fn main() {
         });
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.75, loading_spin).await;
-
+    let mut maps = TileMap::new_deferred(1, 1, TILE_SIZE, Vec2::new(TILE_SIZE, TILE_SIZE), 0.0);
     let mut entities = Vec::<Entity>::new();
-    for _ in 0..30 {
-        let pos = vec2(
-            helpers::random_range(0.0, 500.0),
-            helpers::random_range(0.0, 500.0),
-        );
-        if let Some(virabird) = Entity::spawn(&db, "virabird", pos, &registry) {
-            entities.push(virabird);
-        }
-    }
-    for _ in 0..50 {
-        let pos = vec2(
-            helpers::random_range(0.0, 500.0),
-            helpers::random_range(0.0, 500.0),
-        );
-        if let Some(virat) = Entity::spawn(&db, "virat", pos, &registry) {
-            entities.push(virat);
-        }
-    }
-
-    for _ in 0..30 {
-        let pos = vec2(
-            helpers::random_range(0.0, 500.0),
-            helpers::random_range(0.0, 500.0),
-        );
-        if let Some(chopbot) = Entity::spawn(&db, "chopbot", pos, &registry) {
-            entities.push(chopbot);
-        }
-    }
+    scene::scene_expedition(
+        &mut maps,
+        &mut entities,
+        &db,
+        &registry,
+        &structures,
+        grass,
+        TILE_SIZE,
+        CHUNK_ALLOC_PER_FRAME,
+        CHUNK_REBUILD_PER_FRAME,
+    );
+    player.set_position(scene::expedition_spawn_point());
+    let mut current_scene = SceneKind::Expedition;
 
     let mut draw_order: Vec<usize> = Vec::new();
 
@@ -338,6 +333,66 @@ async fn main() {
                 last_screen_width = current_width;
                 last_screen_height = current_height;
             }
+        }
+
+        if is_key_pressed(KeyCode::F1) && current_scene != SceneKind::Expedition {
+            if current_scene == SceneKind::Farm {
+                let _ = scene::save_farm_scene(&maps);
+            }
+            loading_spin += LOADING_SPIN_SPEED * get_frame_time();
+            show_loading(&loading, "Loading Expedition", 0.1, loading_spin).await;
+            scene::scene_expedition(
+                &mut maps,
+                &mut entities,
+                &db,
+                &registry,
+                &structures,
+                grass,
+                TILE_SIZE,
+                CHUNK_ALLOC_PER_FRAME,
+                CHUNK_REBUILD_PER_FRAME,
+            );
+            player.set_position(scene::expedition_spawn_point());
+            camera.target = player.position();
+            entity_target_cache.clear();
+            damage_events.clear();
+            current_scene = SceneKind::Expedition;
+            loading_spin += LOADING_SPIN_SPEED * get_frame_time();
+            show_loading(&loading, "Loading Expedition", 1.0, loading_spin).await;
+        }
+
+        if is_key_pressed(KeyCode::F2) && current_scene != SceneKind::Farm {
+            loading_spin += LOADING_SPIN_SPEED * get_frame_time();
+            show_loading(&loading, "Loading Farm", 0.08, loading_spin).await;
+            scene::scene_farm(
+                &mut maps,
+                &mut entities,
+                &structures,
+                grass,
+                TILE_SIZE,
+                CHUNK_ALLOC_PER_FRAME,
+                CHUNK_REBUILD_PER_FRAME,
+            );
+            player.set_position(scene::farm_spawn_point(&maps));
+            camera.target = player.position();
+            entity_target_cache.clear();
+            damage_events.clear();
+            current_scene = SceneKind::Farm;
+            warm_scene_chunks_loading(
+                &mut maps,
+                &tileset,
+                &loading,
+                "Loading Farm",
+                &mut loading_spin,
+            )
+            .await;
+        }
+
+        if is_quit_requested() {
+            if current_scene == SceneKind::Farm {
+                let _ = scene::save_farm_scene(&maps);
+            }
+            break;
         }
         
         if !player_dead {
@@ -725,13 +780,28 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
         return;
     }
 
-    let epsilon = 0.001;
-    let cell_size = 32.0;
+    const EPSILON: f32 = 0.0005;
+    const CELL_SIZE: f32 = 32.0;
+    const SOLVER_ITERS: usize = 4;
+
+    #[inline]
+    fn pair_sign(i: usize, j: usize, salt: u64) -> f32 {
+        let mut h = (i as u64).wrapping_mul(0x9E37_79B1_85EB_CA87);
+        h ^= (j as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        h ^= salt;
+        if (h & 1) == 0 {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
     let mut overlap_marks = vec![0u32; entities.len()];
     let mut overlap_stamp = 1u32;
+    let mut corrections = vec![Vec2::ZERO; entities.len()];
     let mut collide_cache: HashMap<(usize, usize), bool> = HashMap::new();
 
-    for _ in 0..3 {
+    for _ in 0..SOLVER_ITERS {
         let mut any = false;
         let mut hitboxes = Vec::with_capacity(entities.len());
         let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::with_capacity(entities.len() * 2);
@@ -739,13 +809,15 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
         for (idx, ent) in entities.iter().enumerate() {
             let hb = db.entities[ent.instance.def].world_hitbox(ent.instance.pos);
             hitboxes.push(hb);
-            let (min_cx, max_cx, min_cy, max_cy) = rect_cell_range(hb, cell_size);
+            let (min_cx, max_cx, min_cy, max_cy) = rect_cell_range(hb, CELL_SIZE);
             for cy in min_cy..=max_cy {
                 for cx in min_cx..=max_cx {
                     grid.entry((cx, cy)).or_default().push(idx);
                 }
             }
         }
+
+        corrections.fill(Vec2::ZERO);
 
         for i in 0..entities.len() {
             overlap_stamp = overlap_stamp.wrapping_add(1);
@@ -755,7 +827,8 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
             }
 
             let a_hb = hitboxes[i];
-            let (min_cx, max_cx, min_cy, max_cy) = rect_cell_range(a_hb, cell_size);
+            let a_center = vec2(a_hb.x + a_hb.w * 0.5, a_hb.y + a_hb.h * 0.5);
+            let (min_cx, max_cx, min_cy, max_cy) = rect_cell_range(a_hb, CELL_SIZE);
             for cy in min_cy..=max_cy {
                 for cx in min_cx..=max_cx {
                     let Some(bucket) = grid.get(&(cx, cy)) else {
@@ -785,7 +858,6 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
                         }
 
                         let b_hb = hitboxes[j];
-
                         let overlap_x = (a_hb.x + a_hb.w).min(b_hb.x + b_hb.w) - a_hb.x.max(b_hb.x);
                         let overlap_y = (a_hb.y + a_hb.h).min(b_hb.y + b_hb.h) - a_hb.y.max(b_hb.y);
                         if overlap_x <= 0.0 || overlap_y <= 0.0 {
@@ -793,20 +865,46 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
                         }
 
                         any = true;
-                        if overlap_x <= overlap_y {
-                            let a_center = a_hb.x + a_hb.w * 0.5;
-                            let b_center = b_hb.x + b_hb.w * 0.5;
-                            let sign = if a_center <= b_center { -1.0 } else { 1.0 };
-                            let push = overlap_x * 0.5 + epsilon;
-                            entities[i].instance.pos.x += sign * push;
-                            entities[j].instance.pos.x -= sign * push;
+                        let b_center = vec2(b_hb.x + b_hb.w * 0.5, b_hb.y + b_hb.h * 0.5);
+                        let delta = b_center - a_center;
+
+                        let choose_x = if (overlap_x - overlap_y).abs() <= 0.0001 {
+                            if delta.x.abs() > delta.y.abs() {
+                                true
+                            } else if delta.y.abs() > delta.x.abs() {
+                                false
+                            } else {
+                                pair_sign(i, j, 0xA53C_7E19) > 0.0
+                            }
                         } else {
-                            let a_center = a_hb.y + a_hb.h * 0.5;
-                            let b_center = b_hb.y + b_hb.h * 0.5;
-                            let sign = if a_center <= b_center { -1.0 } else { 1.0 };
-                            let push = overlap_y * 0.5 + epsilon;
-                            entities[i].instance.pos.y += sign * push;
-                            entities[j].instance.pos.y -= sign * push;
+                            overlap_x < overlap_y
+                        };
+
+                        let pair_extent = a_hb
+                            .w
+                            .min(a_hb.h)
+                            .min(b_hb.w.min(b_hb.h))
+                            .max(1.0);
+                        let max_pair_push = pair_extent * 0.35;
+
+                        if choose_x {
+                            let dir = if delta.x.abs() > 0.0001 {
+                                delta.x.signum()
+                            } else {
+                                pair_sign(i, j, 0x5F4D_CC3B)
+                            };
+                            let push = ((overlap_x + EPSILON) * 0.5).min(max_pair_push);
+                            corrections[i].x -= dir * push;
+                            corrections[j].x += dir * push;
+                        } else {
+                            let dir = if delta.y.abs() > 0.0001 {
+                                delta.y.signum()
+                            } else {
+                                pair_sign(i, j, 0x73D2_A11F)
+                            };
+                            let push = ((overlap_y + EPSILON) * 0.5).min(max_pair_push);
+                            corrections[i].y -= dir * push;
+                            corrections[j].y += dir * push;
                         }
                     }
                 }
@@ -817,8 +915,21 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
             break;
         }
 
-        for ent in entities.iter_mut() {
-            ent.clamp_to_map(map, db);
+        for i in 0..entities.len() {
+            let mut correction = corrections[i];
+            if correction.length_squared() <= 0.0 {
+                continue;
+            }
+
+            let hb = hitboxes[i];
+            let max_total_push = hb.w.max(hb.h).max(1.0) * 0.45;
+            let len_sq = correction.length_squared();
+            if len_sq > max_total_push * max_total_push {
+                correction *= max_total_push / len_sq.sqrt();
+            }
+
+            entities[i].instance.pos += correction;
+            entities[i].clamp_to_map(map, db);
         }
     }
 }
