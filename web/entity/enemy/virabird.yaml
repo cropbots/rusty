@@ -3,25 +3,45 @@ traits:
   - target_player
   - no_map_collision
 stats:
-  hp: 5
-  speed: 4.5
-  damage: 1
+  hp: 2
+  speed: 200
 visuals:
   sprite: "src/assets/objects/virabird.png"
   draw_params:
     # 3.005780347 x 3.008849558
-    dest_size: [17.3, 11.3]
+    dest_size: [12.65, 9.15]
     rotation: 0.0
     flip_x: false
     flip_y: false
-    pivot: [16, 16]
+    pivot: [0, 0]
     color: [255, 255, 255, 255]
     offset: [0, 0]
 hitbox:
-  x: 16
-  y: 16
-  w: 17.3
-  h: 11.3
+  x: 12.65
+  y: 9.15
+  w: 12.65
+  h: 9.15
 behavior:
-  type: action
-  name: virabird_ai
+  type: sequence
+  children:
+    - type: condition
+      name: has_target
+    - type: action
+      name: bird_ai
+      params:
+        flee_range: 75
+        seek_range: 100
+        flee_force: 50
+        seek_force: 0
+        mid_seek_force: 50
+        dash_speed: 400
+        dash_duration: 0.2
+        dash_cooldown: 0.0
+        dash_input_scale: 1.0
+        dash_target_bias: 1.0
+        dash_allow_zero: 0.0
+        steer_while_dashing: 1.0
+        dash_max_distance: 999999
+        move_force_scale: 1.0
+        dash_turn_smoothing: 0.6
+        dash_max_turn: 2.0

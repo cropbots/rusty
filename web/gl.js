@@ -1425,6 +1425,62 @@ var importObject = {
             }
             delete FS.loaded_files[file_id];
         },
+        mq_storage_set_item: function (key_ptr, key_len, value_ptr, value_len) {
+            try {
+                if (window.localStorage == null) {
+                    return 0;
+                }
+
+                var key = UTF8ToString(key_ptr, key_len);
+                var value = UTF8ToString(value_ptr, value_len);
+                window.localStorage.setItem(key, value);
+                return 1;
+            } catch (e) {
+                console.warn("mq_storage_set_item failed", e);
+                return 0;
+            }
+        },
+        mq_storage_get_item_len: function (key_ptr, key_len) {
+            try {
+                if (window.localStorage == null) {
+                    return -1;
+                }
+
+                var key = UTF8ToString(key_ptr, key_len);
+                var value = window.localStorage.getItem(key);
+                if (value == null) {
+                    return -1;
+                }
+                return (new TextEncoder().encode(value)).length;
+            } catch (e) {
+                console.warn("mq_storage_get_item_len failed", e);
+                return -1;
+            }
+        },
+        mq_storage_get_item: function (key_ptr, key_len, out_ptr, out_len) {
+            try {
+                if (window.localStorage == null) {
+                    return -1;
+                }
+
+                var key = UTF8ToString(key_ptr, key_len);
+                var value = window.localStorage.getItem(key);
+                if (value == null) {
+                    return -1;
+                }
+
+                var bytes = new TextEncoder().encode(value);
+                if (bytes.length > out_len) {
+                    return -1;
+                }
+                var out = new Uint8Array(wasm_memory.buffer, out_ptr, out_len);
+                out.set(bytes);
+                return bytes.length;
+            } catch (e) {
+                console.warn("mq_storage_get_item failed", e);
+                return -1;
+            }
+        },
         sapp_set_cursor_grab: function (grab) {
             if (grab) {
                 canvas.requestPointerLock();

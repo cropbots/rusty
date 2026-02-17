@@ -460,18 +460,71 @@ fn load_farm_snapshot_json() -> Option<String> {
 
 #[cfg(target_arch = "wasm32")]
 fn save_farm_snapshot_json(json: &str) -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
-    let Ok(Some(storage)) = window.local_storage() else {
-        return false;
-    };
-    storage.set_item(FARM_STORAGE_KEY, json).is_ok()
+    wasm_storage_set_item(FARM_STORAGE_KEY, json)
 }
 
 #[cfg(target_arch = "wasm32")]
 fn load_farm_snapshot_json() -> Option<String> {
-    let window = web_sys::window()?;
-    let storage = window.local_storage().ok().flatten()?;
-    storage.get_item(FARM_STORAGE_KEY).ok().flatten()
+    wasm_storage_get_item(FARM_STORAGE_KEY)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_storage_set_item(key: &str, value: &str) -> bool {
+    let key_bytes = key.as_bytes();
+    let value_bytes = value.as_bytes();
+    unsafe {
+        mq_storage_set_item(
+            key_bytes.as_ptr(),
+            key_bytes.len(),
+            value_bytes.as_ptr(),
+            value_bytes.len(),
+        ) != 0
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_storage_get_item(key: &str) -> Option<String> {
+    let key_bytes = key.as_bytes();
+    let len = unsafe { mq_storage_get_item_len(key_bytes.as_ptr(), key_bytes.len()) };
+    if len < 0 {
+        return None;
+    }
+
+    let mut buf = vec![0u8; len as usize];
+    let written = unsafe {
+        mq_storage_get_item(
+            key_bytes.as_ptr(),
+            key_bytes.len(),
+            buf.as_mut_ptr(),
+            buf.len(),
+        )
+    };
+    if written < 0 {
+        return None;
+    }
+    let written = written as usize;
+    if written > buf.len() {
+        return None;
+    }
+    buf.truncate(written);
+    String::from_utf8(buf).ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+unsafe extern "C" {
+    fn mq_storage_set_item(
+        key_ptr: *const u8,
+        key_len: usize,
+        value_ptr: *const u8,
+        value_len: usize,
+    ) -> i32;
+
+    fn mq_storage_get_item_len(key_ptr: *const u8, key_len: usize) -> i32;
+
+    fn mq_storage_get_item(
+        key_ptr: *const u8,
+        key_len: usize,
+        out_ptr: *mut u8,
+        out_len: usize,
+    ) -> i32;
 }

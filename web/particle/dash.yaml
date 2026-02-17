@@ -1,5 +1,5 @@
 id: dash_afterimage
-max_particles: 75
+max_particles: 1000
 spawn_rate: 0
 trail_rate: 0.25
 burst: 0
@@ -11,8 +11,8 @@ angle: 0
 angle_variance: 0
 gravity: [0, 0]
 damping: 1.0
-size_start: 0.25
-size_end: 0.25
+size_start: 1.0
+size_end: 1.0
 color_start: [255, 255, 255, 150]
 color_end: [255, 255, 255, 0]
 shape: texture
