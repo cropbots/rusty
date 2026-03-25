@@ -1,9 +1,9 @@
-use macroquad::prelude::*;
+use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
 use macroquad::file::load_string;
+use macroquad::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
 
 #[derive(Debug)]
 pub enum ParticleLoadError {
@@ -351,9 +351,12 @@ impl ParticleSystem {
             let files = load_wasm_manifest_files(&dir, &["trail.yaml", "dash.yaml"]).await;
             for file in files {
                 let path = format!("{}/{}", dir, file);
-                let raw_str = load_string(&path)
-                    .await
-                    .map_err(|err| ParticleLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, err.to_string())))?;
+                let raw_str = load_string(&path).await.map_err(|err| {
+                    ParticleLoadError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        err.to_string(),
+                    ))
+                })?;
                 let raw: ParticleConfigFile = serde_yaml::from_str(&raw_str)?;
                 let (config, texture_path) = config_from_file(raw);
                 total_capacity = total_capacity.saturating_add(config.max_particles);
@@ -378,7 +381,8 @@ impl ParticleSystem {
                 if !is_yaml(&path) {
                     continue;
                 }
-                let raw: ParticleConfigFile = serde_yaml::from_str(&std::fs::read_to_string(&path)?)?;
+                let raw: ParticleConfigFile =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path)?)?;
                 let (config, texture_path) = config_from_file(raw);
                 total_capacity = total_capacity.saturating_add(config.max_particles);
 
@@ -614,15 +618,13 @@ fn config_from_file(raw: ParticleConfigFile) -> (ParticleConfig, Option<String>)
     let rotation_speed_variance = raw.rotation_speed_variance.unwrap_or(0.0);
     let dynamic_sprite = raw.dynamic_sprite.unwrap_or(false);
 
-    let shape = raw
-        .shape
-        .unwrap_or_else(|| {
-            if raw.texture.is_some() || dynamic_sprite {
-                ParticleShape::Texture
-            } else {
-                ParticleShape::Circle
-            }
-        });
+    let shape = raw.shape.unwrap_or_else(|| {
+        if raw.texture.is_some() || dynamic_sprite {
+            ParticleShape::Texture
+        } else {
+            ParticleShape::Circle
+        }
+    });
 
     let config = ParticleConfig {
         id: raw.id,
@@ -640,7 +642,12 @@ fn config_from_file(raw: ParticleConfigFile) -> (ParticleConfig, Option<String>)
         damping,
         size_start,
         size_end,
-        color_start: Color::from_rgba(color_start[0], color_start[1], color_start[2], color_start[3]),
+        color_start: Color::from_rgba(
+            color_start[0],
+            color_start[1],
+            color_start[2],
+            color_start[3],
+        ),
         color_end: Color::from_rgba(color_end[0], color_end[1], color_end[2], color_end[3]),
         shape,
         inherit_velocity,

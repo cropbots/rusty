@@ -1,5 +1,5 @@
-use macroquad::prelude::*;
 use macroquad::file::load_string;
+use macroquad::prelude::*;
 use serde::Deserialize;
 
 pub fn random_u32() -> u32 {
@@ -118,12 +118,7 @@ pub fn resolve_collisions_axis(
         Axis::X => {
             let mut candidate = pos.x;
             let base_x = pos.x;
-            let rect = Rect::new(
-                pos.x + hitbox.x,
-                pos.y + hitbox.y,
-                hitbox.w,
-                hitbox.h,
-            );
+            let rect = Rect::new(pos.x + hitbox.x, pos.y + hitbox.y, hitbox.w, hitbox.h);
             for collider in colliders {
                 if !rect.overlaps(collider) {
                     continue;
@@ -152,12 +147,7 @@ pub fn resolve_collisions_axis(
         Axis::Y => {
             let mut candidate = pos.y;
             let base_y = pos.y;
-            let rect = Rect::new(
-                pos.x + hitbox.x,
-                pos.y + hitbox.y,
-                hitbox.w,
-                hitbox.h,
-            );
+            let rect = Rect::new(pos.x + hitbox.x, pos.y + hitbox.y, hitbox.w, hitbox.h);
             for collider in colliders {
                 if !rect.overlaps(collider) {
                     continue;

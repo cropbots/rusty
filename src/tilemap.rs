@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use macroquad::prelude::*;
 use crate::helpers::asset_path;
+use macroquad::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TileInfo {
@@ -32,7 +32,7 @@ impl Tileset {
         tileset.rebuild_lookup();
         Ok(tileset)
     }
-    
+
     pub fn get_tile_rect(&self, tile_id: u16) -> Option<Rect> {
         self.tiles_by_id
             .get(tile_id as usize)
@@ -73,13 +73,18 @@ pub struct Tilemap {
 }
 
 impl Tilemap {
-    pub async fn new(tileset_path: &str, texture_path: &str, map_width: usize, map_height: usize) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        tileset_path: &str,
+        texture_path: &str,
+        map_width: usize,
+        map_height: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let tileset = Tileset::load(tileset_path).await?;
         let tile_width = tileset.tile_width as f32;
         let tile_height = tileset.tile_height as f32;
         let texture_path = asset_path(texture_path);
         let texture = load_texture(&texture_path).await?;
-        
+
         Ok(Tilemap {
             tileset,
             texture,
@@ -90,13 +95,13 @@ impl Tilemap {
             height: map_height,
         })
     }
-    
+
     pub fn set_tile(&mut self, x: usize, y: usize, tile_id: u16) {
         if x < self.width && y < self.height {
             self.map_data[y][x] = tile_id;
         }
     }
-    
+
     pub fn get_tile(&self, x: usize, y: usize) -> u16 {
         if x < self.width && y < self.height {
             self.map_data[y][x]
@@ -104,20 +109,22 @@ impl Tilemap {
             0
         }
     }
-    
+
     pub fn draw(&self, start_x: f32, start_y: f32) {
         for (y, row) in self.map_data.iter().enumerate() {
             for (x, &tile_id) in row.iter().enumerate() {
-                if tile_id == 0 { continue; } // Skip empty tiles
-                
+                if tile_id == 0 {
+                    continue;
+                } // Skip empty tiles
+
                 if let Some(source_rect) = self.tileset.get_tile_rect(tile_id) {
                     let dest_rect = Rect::new(
                         start_x + x as f32 * self.tile_width,
                         start_y + y as f32 * self.tile_height,
                         self.tile_width,
-                        self.tile_height
+                        self.tile_height,
                     );
-                    
+
                     draw_texture_ex(
                         &self.texture,
                         dest_rect.x,
@@ -127,7 +134,7 @@ impl Tilemap {
                             source: Some(source_rect),
                             dest_size: Some(vec2(dest_rect.w, dest_rect.h)),
                             ..Default::default()
-                        }
+                        },
                     );
                 }
             }

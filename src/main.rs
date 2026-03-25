@@ -1,29 +1,33 @@
+use image::imageops::FilterType;
 use macroquad::prelude::*;
 use miniquad::conf::{Icon, Platform};
-use image::imageops::FilterType;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use std::task::Poll;
 
-mod map;
-mod player;
-mod helpers;
 mod entity;
-mod r#trait;
-mod particle;
-mod tilemap;
-mod sound;
+mod helpers;
 mod interact;
+mod inventory;
+mod map;
+mod particle;
+mod player;
 mod scene;
+mod sound;
+mod tilemap;
+mod r#trait;
 
+use entity::{
+    DamageEvent, Entity, EntityContext, EntityDatabase, MovementRegistry, PlayerTarget, Target,
+};
 use map::{TileMap, TileSet, load_structures_from_dir};
 use player::Player;
-use entity::{DamageEvent, Entity, EntityContext, EntityDatabase, MovementRegistry, PlayerTarget, Target};
 
-use sound::SoundSystem;
-use particle::ParticleSystem;
 use interact::{InteractContext, InteractRegistry};
+use inventory::{InventoryCatalog, StackInventory};
+use particle::ParticleSystem;
 use scene::SceneKind;
+use sound::SoundSystem;
 
 const CAMERA_DRAG: f32 = 5.0;
 const TILE_SIZE: f32 = 16.0;
@@ -99,13 +103,7 @@ async fn show_loading(loading: &Texture2D, label: &str, progress: f32, spin: f32
             ..Default::default()
         },
     );
-    draw_text(
-        &format!("{label} {pct:.0}%"),
-        20.0,
-        40.0,
-        30.0,
-        WHITE,
-    );
+    draw_text(&format!("{label} {pct:.0}%"), 20.0, 40.0, 30.0, WHITE);
     next_frame().await;
 }
 
@@ -168,12 +166,12 @@ async fn main() {
         0.15,
         &mut loading_spin,
     )
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("tileset load failed: {err}");
-            eprintln!("Please ensure src/assets/tileset.json and src/assets/tileset.png exist");
-            panic!("Tileset loading failed");
-        });
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("tileset load failed: {err}");
+        eprintln!("Please ensure src/assets/tileset.json and src/assets/tileset.png exist");
+        panic!("Tileset loading failed");
+    });
     let grass: u8 = if tileset.count() > 24 { 24 } else { 0 };
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.22, loading_spin).await;
@@ -222,8 +220,19 @@ async fn main() {
     let heart_empty = load_texture(&helpers::asset_path("src/assets/ui/heart-empty.png"))
         .await
         .unwrap_or_else(|_| Texture2D::empty());
+    let gear_icon = load_texture(&helpers::asset_path("src/assets/items/gear.png"))
+        .await
+        .unwrap_or_else(|_| Texture2D::empty());
+    let gear_outline_icon = load_texture(&helpers::asset_path("src/assets/items/gear-o.png"))
+        .await
+        .unwrap_or_else(|_| Texture2D::empty());
     heart_full.set_filter(FilterMode::Nearest);
     heart_empty.set_filter(FilterMode::Nearest);
+    gear_icon.set_filter(FilterMode::Nearest);
+    gear_outline_icon.set_filter(FilterMode::Nearest);
+
+    let inventory_catalog = InventoryCatalog::demo(tileset.count(), gear_icon, gear_outline_icon);
+    let mut inventory = StackInventory::seed_demo(&inventory_catalog);
 
     // Camera
     let mut camera = Camera2D {
@@ -256,11 +265,11 @@ async fn main() {
         0.7,
         &mut loading_spin,
     )
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("entity load failed: {err}");
-            EntityDatabase::empty()
-        });
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("entity load failed: {err}");
+        EntityDatabase::empty()
+    });
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.75, loading_spin).await;
     let mut maps = TileMap::new_deferred(1, 1, TILE_SIZE, Vec2::new(TILE_SIZE, TILE_SIZE), 0.0);
@@ -289,11 +298,11 @@ async fn main() {
         0.8,
         &mut loading_spin,
     )
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("particle load failed: {err}");
-            ParticleSystem::empty()
-        });
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("particle load failed: {err}");
+        ParticleSystem::empty()
+    });
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.85, loading_spin).await;
     let mut walk_trail = particles.emitter("dust_trail", player.position());
@@ -307,11 +316,11 @@ async fn main() {
         0.9,
         &mut loading_spin,
     )
-        .await
-        .unwrap_or_else(|err| {
-            eprintln!("sound load failed: {err}");
-            SoundSystem::empty()
-        });
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("sound load failed: {err}");
+        SoundSystem::empty()
+    });
     loading_spin += LOADING_SPIN_SPEED * get_frame_time();
     show_loading(&loading, "Loading", 0.98, loading_spin).await;
 
@@ -320,10 +329,10 @@ async fn main() {
     let mut entity_target_cache: HashMap<(u64, u8), Option<entity::EntityTarget>> = HashMap::new();
     let mut player_dead = false;
     let interact_registry = InteractRegistry::new();
-    
+
     loop {
         let dt = get_frame_time();
-        
+
         // Check for resolution changes and recreate render target if needed
         if use_render_target {
             let current_width = screen_width();
@@ -394,11 +403,11 @@ async fn main() {
             }
             break;
         }
-        
+
         if !player_dead {
             player.update(&maps);
         }
-        
+
         let particle_budget = particle_budget_scale(
             screen_width(),
             screen_height(),
@@ -420,17 +429,24 @@ async fn main() {
         let view_rect = camera_view_rect_logic(camera.target, CAMERA_FOV);
         let mouse_screen = mouse_position();
         let mouse_world = camera.screen_to_world(vec2(mouse_screen.0, mouse_screen.1));
+        let mouse_screen_vec = vec2(mouse_screen.0, mouse_screen.1);
+        let ui_captures_pointer = inventory.captures_pointer(mouse_screen_vec, &inventory_catalog);
+        inventory.handle_input(&inventory_catalog);
         let player_pos = player.position();
         let hovered_interactor = maps
             .structure_interactors()
             .iter()
             .find(|interactor| {
                 point_in_rect(mouse_world, interactor.rect)
-                    && interactor_in_range(player_pos, interactor.group_rect, interactor.interact_range_world)
+                    && interactor_in_range(
+                        player_pos,
+                        interactor.group_rect,
+                        interactor.interact_range_world,
+                    )
             })
             .cloned();
 
-        if is_mouse_button_pressed(MouseButton::Left) {
+        if is_mouse_button_pressed(MouseButton::Left) && !ui_captures_pointer {
             if let Some(interactor) = hovered_interactor.as_ref() {
                 let mut ctx = InteractContext {
                     structure_id: &interactor.structure_id,
@@ -672,18 +688,19 @@ async fn main() {
             &heart_full,
             &heart_empty,
         );
+        inventory.draw(&inventory_catalog, &tileset);
 
         i += get_frame_time();
         if i >= 1.0 {
             fps = get_fps();
             i = 0.0;
-        } 
+        }
         draw_text(
             &format!("FPS: {:.0}", fps),
             20.0,
             40.0,
             30.0, // font size
-            WHITE
+            WHITE,
         );
 
         next_frame().await;
@@ -789,11 +806,7 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
         let mut h = (i as u64).wrapping_mul(0x9E37_79B1_85EB_CA87);
         h ^= (j as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
         h ^= salt;
-        if (h & 1) == 0 {
-            -1.0
-        } else {
-            1.0
-        }
+        if (h & 1) == 0 { -1.0 } else { 1.0 }
     }
 
     let mut overlap_marks = vec![0u32; entities.len()];
@@ -880,11 +893,7 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
                             overlap_x < overlap_y
                         };
 
-                        let pair_extent = a_hb
-                            .w
-                            .min(a_hb.h)
-                            .min(b_hb.w.min(b_hb.h))
-                            .max(1.0);
+                        let pair_extent = a_hb.w.min(a_hb.h).min(b_hb.w.min(b_hb.h)).max(1.0);
                         let max_pair_push = pair_extent * 0.35;
 
                         if choose_x {

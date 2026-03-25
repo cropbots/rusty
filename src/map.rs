@@ -1,8 +1,8 @@
-use macroquad::prelude::*;
+use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
 use macroquad::file::load_string;
+use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
 
 const EMPTY_TILE: u8 = u8::MAX;
 const CHUNK_SIZE: usize = 32;
@@ -49,7 +49,10 @@ pub struct TileSet {
 }
 
 impl TileSet {
-    pub async fn load(tileset_json: &str, texture_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn load(
+        tileset_json: &str,
+        texture_path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let json_path = asset_path(tileset_json);
         let texture_path = asset_path(texture_path);
         let json_content = load_string(&json_path).await?;
@@ -106,8 +109,17 @@ impl TileSet {
         texture.set_filter(FilterMode::Nearest);
 
         if let Some(image) = parsed.image.as_ref() {
-            if !image.is_empty() && image != Path::new(&texture_path).file_name().and_then(|name| name.to_str()).unwrap_or("") {
-                eprintln!("tileset.json image '{}' does not match texture path '{}'", image, texture_path);
+            if !image.is_empty()
+                && image
+                    != Path::new(&texture_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("")
+            {
+                eprintln!(
+                    "tileset.json image '{}' does not match texture path '{}'",
+                    image, texture_path
+                );
             }
         }
 
@@ -119,6 +131,10 @@ impl TileSet {
             return None;
         }
         self.tiles.get(id as usize).and_then(|rect| *rect)
+    }
+
+    pub fn tile_rect(&self, id: u8) -> Option<Rect> {
+        self.get(id)
     }
 
     pub fn texture(&self) -> &Texture2D {
@@ -555,8 +571,20 @@ pub struct TileMap {
 }
 
 impl TileMap {
-    pub fn demo(width: usize, height: usize, tile_size: f32, tile_count: usize, border_thickness: f32) -> Self {
-        let mut map = Self::new(width, height, tile_size, Vec2::new(tile_size, tile_size), border_thickness);
+    pub fn demo(
+        width: usize,
+        height: usize,
+        tile_size: f32,
+        tile_count: usize,
+        border_thickness: f32,
+    ) -> Self {
+        let mut map = Self::new(
+            width,
+            height,
+            tile_size,
+            Vec2::new(tile_size, tile_size),
+            border_thickness,
+        );
 
         if tile_count > 0 {
             map.fill_layer(LayerKind::Background, 24);
@@ -565,7 +593,13 @@ impl TileMap {
         map
     }
 
-    pub fn new(width: usize, height: usize, tile_size: f32, grid_size: Vec2, border_thickness: f32) -> Self {
+    pub fn new(
+        width: usize,
+        height: usize,
+        tile_size: f32,
+        grid_size: Vec2,
+        border_thickness: f32,
+    ) -> Self {
         let len = width * height;
         let chunk_cols = (width + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let chunk_rows = (height + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -625,7 +659,13 @@ impl TileMap {
         }
     }
 
-    pub fn new_deferred(width: usize, height: usize, tile_size: f32, grid_size: Vec2, border_thickness: f32) -> Self {
+    pub fn new_deferred(
+        width: usize,
+        height: usize,
+        tile_size: f32,
+        grid_size: Vec2,
+        border_thickness: f32,
+    ) -> Self {
         let len = width * height;
         let chunk_cols = (width + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let chunk_rows = (height + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -739,7 +779,11 @@ impl TileMap {
                 break;
             }
 
-            for layer in [LayerKind::Background, LayerKind::Foreground, LayerKind::Overlay] {
+            for layer in [
+                LayerKind::Background,
+                LayerKind::Foreground,
+                LayerKind::Overlay,
+            ] {
                 if (get_time() - start) >= budget {
                     done = false;
                     break 'chunk_loop;
@@ -972,15 +1016,7 @@ impl TileMap {
 
         let width = max_x.saturating_sub(x);
         let height = max_y.saturating_sub(y);
-        self.mark_chunks_dirty_rect(
-            x,
-            y,
-            width,
-            height,
-            bg_changed,
-            fg_changed,
-            ov_changed,
-        );
+        self.mark_chunks_dirty_rect(x, y, width, height, bg_changed, fg_changed, ov_changed);
     }
 
     pub fn place_structure_def(&mut self, def: &StructureDef, x: usize, y: usize) {
@@ -1104,7 +1140,14 @@ impl TileMap {
                     rect
                 };
 
-                if spatial_overlaps(&padded, &placed_rects, &spatial, cell_size, cell_cols, cell_rows) {
+                if spatial_overlaps(
+                    &padded,
+                    &placed_rects,
+                    &spatial,
+                    cell_size,
+                    cell_cols,
+                    cell_rows,
+                ) {
                     continue;
                 }
 
@@ -1130,7 +1173,14 @@ impl TileMap {
 
                 placed_rects.push(padded);
                 let rect_index = placed_rects.len() - 1;
-                spatial_insert(rect_index, &padded, &mut spatial, cell_size, cell_cols, cell_rows);
+                spatial_insert(
+                    rect_index,
+                    &padded,
+                    &mut spatial,
+                    cell_size,
+                    cell_cols,
+                    cell_rows,
+                );
                 count += 1;
             }
         }
@@ -1275,9 +1325,8 @@ impl TileMap {
         for y in 0..self.height {
             for x in 0..self.width {
                 let tile = self.get_tile(layer, x, y);
-                let solid = tile != EMPTY_TILE
-                    && (tile as usize) < lookup.len()
-                    && lookup[tile as usize];
+                let solid =
+                    tile != EMPTY_TILE && (tile as usize) < lookup.len() && lookup[tile as usize];
                 let idx = self.idx(x, y);
                 self.solid[idx] = solid;
                 self.collision_mask[idx] = if solid { 0x0F } else { 0 };
@@ -1335,8 +1384,7 @@ impl TileMap {
         _screen_w: f32,
         _screen_h: f32,
     ) {
-        let (min_cx, max_cx, min_cy, max_cy) =
-            self.visible_chunk_range(camera_target, camera_zoom);
+        let (min_cx, max_cx, min_cy, max_cy) = self.visible_chunk_range(camera_target, camera_zoom);
 
         for cy in min_cy..=max_cy {
             for cx in min_cx..=max_cx {
@@ -1364,15 +1412,25 @@ impl TileMap {
         let tile_min_y = (min_y / self.tile_size).floor() as i32;
         let tile_max_y = (max_y / self.tile_size).ceil() as i32;
 
-        let min_cx = tile_min_x.div_euclid(CHUNK_SIZE as i32).clamp(0, self.chunk_cols as i32 - 1);
-        let max_cx = tile_max_x.div_euclid(CHUNK_SIZE as i32).clamp(0, self.chunk_cols as i32 - 1);
-        let min_cy = tile_min_y.div_euclid(CHUNK_SIZE as i32).clamp(0, self.chunk_rows as i32 - 1);
-        let max_cy = tile_max_y.div_euclid(CHUNK_SIZE as i32).clamp(0, self.chunk_rows as i32 - 1);
+        let min_cx = tile_min_x
+            .div_euclid(CHUNK_SIZE as i32)
+            .clamp(0, self.chunk_cols as i32 - 1);
+        let max_cx = tile_max_x
+            .div_euclid(CHUNK_SIZE as i32)
+            .clamp(0, self.chunk_cols as i32 - 1);
+        let min_cy = tile_min_y
+            .div_euclid(CHUNK_SIZE as i32)
+            .clamp(0, self.chunk_rows as i32 - 1);
+        let max_cy = tile_max_y
+            .div_euclid(CHUNK_SIZE as i32)
+            .clamp(0, self.chunk_rows as i32 - 1);
 
-        ((min_cx as i32 - 1).max(0).min(self.chunk_cols as i32 - 1),
-        (max_cx as i32 + 1).max(0).min(self.chunk_cols as i32 - 1),
-        (min_cy as i32 - 1).max(0).min(self.chunk_rows as i32 - 1),
-        (max_cy as i32 + 1).max(0).min(self.chunk_rows as i32 - 1))
+        (
+            (min_cx as i32 - 1).max(0).min(self.chunk_cols as i32 - 1),
+            (max_cx as i32 + 1).max(0).min(self.chunk_cols as i32 - 1),
+            (min_cy as i32 - 1).max(0).min(self.chunk_rows as i32 - 1),
+            (max_cy as i32 + 1).max(0).min(self.chunk_rows as i32 - 1),
+        )
     }
 
     fn rebuild_chunk_layer_if_dirty(
@@ -1381,13 +1439,27 @@ impl TileMap {
         layer: LayerKind,
         tileset: &TileSet,
     ) {
-        if self.chunks.get(chunk_index).and_then(|c| c.as_ref()).is_none() {
+        if self
+            .chunks
+            .get(chunk_index)
+            .and_then(|c| c.as_ref())
+            .is_none()
+        {
             return;
         }
         let is_dirty = match layer {
-            LayerKind::Background => self.chunks[chunk_index].as_ref().map(|c| c.dirty_background).unwrap_or(false),
-            LayerKind::Foreground => self.chunks[chunk_index].as_ref().map(|c| c.dirty_foreground).unwrap_or(false),
-            LayerKind::Overlay => self.chunks[chunk_index].as_ref().map(|c| c.dirty_overlay).unwrap_or(false),
+            LayerKind::Background => self.chunks[chunk_index]
+                .as_ref()
+                .map(|c| c.dirty_background)
+                .unwrap_or(false),
+            LayerKind::Foreground => self.chunks[chunk_index]
+                .as_ref()
+                .map(|c| c.dirty_foreground)
+                .unwrap_or(false),
+            LayerKind::Overlay => self.chunks[chunk_index]
+                .as_ref()
+                .map(|c| c.dirty_overlay)
+                .unwrap_or(false),
         };
 
         if !is_dirty {
@@ -1398,8 +1470,12 @@ impl TileMap {
         }
 
         let target = match layer {
-            LayerKind::Background => self.chunks[chunk_index].as_ref().map(|c| c.background.clone()),
-            LayerKind::Foreground => self.chunks[chunk_index].as_ref().map(|c| c.foreground.clone()),
+            LayerKind::Background => self.chunks[chunk_index]
+                .as_ref()
+                .map(|c| c.background.clone()),
+            LayerKind::Foreground => self.chunks[chunk_index]
+                .as_ref()
+                .map(|c| c.foreground.clone()),
             LayerKind::Overlay => self.chunks[chunk_index].as_ref().map(|c| c.overlay.clone()),
         };
         let Some(target) = target else {
@@ -1777,14 +1853,24 @@ impl TileMap {
     }
 
     fn ensure_chunk_allocated(&mut self, chunk_index: usize) -> bool {
-        if self.chunks.get(chunk_index).and_then(|c| c.as_ref()).is_some() {
+        if self
+            .chunks
+            .get(chunk_index)
+            .and_then(|c| c.as_ref())
+            .is_some()
+        {
             return true;
         }
         if self.chunk_allocs_this_frame >= self.chunk_alloc_budget_per_frame {
             return false;
         }
         self.create_chunk(chunk_index);
-        if self.chunks.get(chunk_index).and_then(|c| c.as_ref()).is_some() {
+        if self
+            .chunks
+            .get(chunk_index)
+            .and_then(|c| c.as_ref())
+            .is_some()
+        {
             self.chunk_allocs_this_frame += 1;
             true
         } else {
@@ -1800,9 +1886,21 @@ impl TileMap {
         background.texture.set_filter(FilterMode::Nearest);
         foreground.texture.set_filter(FilterMode::Nearest);
         overlay.texture.set_filter(FilterMode::Nearest);
-        let dirty_background = self.pending_dirty_background.get(chunk_index).copied().unwrap_or(true);
-        let dirty_foreground = self.pending_dirty_foreground.get(chunk_index).copied().unwrap_or(true);
-        let dirty_overlay = self.pending_dirty_overlay.get(chunk_index).copied().unwrap_or(true);
+        let dirty_background = self
+            .pending_dirty_background
+            .get(chunk_index)
+            .copied()
+            .unwrap_or(true);
+        let dirty_foreground = self
+            .pending_dirty_foreground
+            .get(chunk_index)
+            .copied()
+            .unwrap_or(true);
+        let dirty_overlay = self
+            .pending_dirty_overlay
+            .get(chunk_index)
+            .copied()
+            .unwrap_or(true);
         if let Some(slot) = self.chunks.get_mut(chunk_index) {
             *slot = Some(Chunk {
                 background,
@@ -1863,7 +1961,12 @@ fn spatial_cell_range(
     let min_cy = min_cy.clamp(0, max_row);
     let max_cy = max_cy.clamp(0, max_row);
 
-    (min_cx as usize, max_cx as usize, min_cy as usize, max_cy as usize)
+    (
+        min_cx as usize,
+        max_cx as usize,
+        min_cy as usize,
+        max_cy as usize,
+    )
 }
 
 fn spatial_overlaps(
@@ -1924,7 +2027,9 @@ fn merge_rect(a: Rect, b: Rect) -> Rect {
     Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
 }
 
-pub async fn load_structures_from_dir(dir: impl AsRef<Path>) -> Result<Vec<StructureDef>, std::io::Error> {
+pub async fn load_structures_from_dir(
+    dir: impl AsRef<Path>,
+) -> Result<Vec<StructureDef>, std::io::Error> {
     let mut defs = Vec::new();
 
     if cfg!(target_arch = "wasm32") {

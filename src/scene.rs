@@ -238,9 +238,7 @@ fn spawn_farm_inner_decorations(
         let Some(def) = find_structure(structures, id) else {
             continue;
         };
-        let seed = FARM_DECOR_SEED
-            ^ 0xBD1E_9955
-            ^ ((i as u32 + 1).wrapping_mul(0xA24B_4F6D));
+        let seed = FARM_DECOR_SEED ^ 0xBD1E_9955 ^ ((i as u32 + 1).wrapping_mul(0xA24B_4F6D));
         scatter_structure_where(map, def, seed, inner_area_tiles, |candidate| {
             tile_rect_contains(farm_area, candidate)
         });
@@ -417,8 +415,7 @@ fn find_structure<'a>(structures: &'a [StructureDef], id: &str) -> Option<&'a St
 }
 
 fn hash_u32(x: u32, seed: u32, salt: u32) -> u32 {
-    let mut v = x
-        .wrapping_mul(0x9E37_79B1)
+    let mut v = x.wrapping_mul(0x9E37_79B1)
         ^ seed.wrapping_mul(0x85EB_CA6B)
         ^ salt.wrapping_mul(0xC2B2_AE35);
     v ^= v >> 16;
@@ -435,7 +432,11 @@ fn load_farm_snapshot() -> Option<TileMapSnapshot> {
 #[cfg(not(target_arch = "wasm32"))]
 fn farm_save_path() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(std::path::PathBuf::from(home).join(".cropbots").join("farm.json"))
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".cropbots")
+            .join("farm.json"),
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]

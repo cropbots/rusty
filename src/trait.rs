@@ -1,13 +1,6 @@
 use crate::entity::{
-    BehaviorRuntime,
-    DEF_FLAG_ERRATIC,
-    EntityContext,
-    EntityKind,
-    EntityInstance,
-    MovementParams,
-    StatBlock,
-    TraitDef,
-    Target,
+    BehaviorRuntime, DEF_FLAG_ERRATIC, EntityContext, EntityInstance, EntityKind, MovementParams,
+    StatBlock, Target, TraitDef,
 };
 use macroquad::prelude::*;
 
@@ -209,7 +202,14 @@ pub fn movement_seek(
     let Some(target) = entity.current_target.as_ref().map(Target::position) else {
         return;
     };
-    seek_towards_target(entity, behavior, dt, params, "seek_speed", Target::Position(target));
+    seek_towards_target(
+        entity,
+        behavior,
+        dt,
+        params,
+        "seek_speed",
+        Target::Position(target),
+    );
 }
 
 pub fn movement_flee(
@@ -222,7 +222,14 @@ pub fn movement_flee(
     let Some(target) = entity.current_target.as_ref().map(Target::position) else {
         return;
     };
-    flee_from_target(entity, behavior, dt, params, "flee_speed", Target::Position(target));
+    flee_from_target(
+        entity,
+        behavior,
+        dt,
+        params,
+        "flee_speed",
+        Target::Position(target),
+    );
 }
 
 pub fn movement_watch(
@@ -274,10 +281,8 @@ fn watch_target(
         let t = x.clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     };
-    let seek_weight =
-        smoothstep01((dist - (seek_range - range_blend)) / (2.0 * range_blend));
-    let flee_weight =
-        smoothstep01(((flee_range + range_blend) - dist) / (2.0 * range_blend));
+    let seek_weight = smoothstep01((dist - (seek_range - range_blend)) / (2.0 * range_blend));
+    let flee_weight = smoothstep01(((flee_range + range_blend) - dist) / (2.0 * range_blend));
     let desired_force = dir * (seek_force * seek_weight) - dir * (flee_force * flee_weight);
 
     // Smooth force changes so watch steering doesn't jitter/snap.
@@ -606,9 +611,17 @@ pub fn movement_curve_dash_at_target(
     _ctx: &EntityContext,
 ) {
     let dash_speed = params.get("dash_speed").copied().unwrap_or(500.0);
-    let dash_duration = params.get("dash_duration").copied().unwrap_or(0.18).max(0.01);
+    let dash_duration = params
+        .get("dash_duration")
+        .copied()
+        .unwrap_or(0.18)
+        .max(0.01);
     let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(0.2).max(0.0);
-    let arc_strength = params.get("arc_strength").copied().unwrap_or(0.75).clamp(0.0, 2.0);
+    let arc_strength = params
+        .get("arc_strength")
+        .copied()
+        .unwrap_or(0.75)
+        .clamp(0.0, 2.0);
     let curve_rate = params.get("curve_rate").copied().unwrap_or(14.0).max(0.0); // radians/sec
 
     if behavior.cooldown > 0.0 {
@@ -632,9 +645,11 @@ pub fn movement_curve_dash_at_target(
                 let start_angle = sign * arc_strength * std::f32::consts::FRAC_PI_2;
                 let cos_a = start_angle.cos();
                 let sin_a = start_angle.sin();
-                let start_dir =
-                    vec2(base.x * cos_a - base.y * sin_a, base.x * sin_a + base.y * cos_a)
-                        .normalize_or_zero();
+                let start_dir = vec2(
+                    base.x * cos_a - base.y * sin_a,
+                    base.x * sin_a + base.y * cos_a,
+                )
+                .normalize_or_zero();
                 if start_dir.length_squared() > 0.0001 {
                     behavior.dir = start_dir;
                     behavior.timer = dash_duration;
@@ -683,7 +698,11 @@ pub fn movement_bird_ai(
     let dash_duration = params.get("dash_duration").copied().unwrap_or(0.2).max(0.0);
     let dash_cooldown = params.get("dash_cooldown").copied().unwrap_or(1.0).max(0.0);
     // If > 0, cap total dash displacement per dash regardless of speed/duration tuning.
-    let dash_max_distance = params.get("dash_max_distance").copied().unwrap_or(0.0).max(0.0);
+    let dash_max_distance = params
+        .get("dash_max_distance")
+        .copied()
+        .unwrap_or(0.0)
+        .max(0.0);
     // Scales discrete random input axis values: {-1,0,1} * dash_input_scale.
     let dash_input_scale = params
         .get("dash_input_scale")
@@ -711,13 +730,13 @@ pub fn movement_bird_ai(
         .unwrap_or(std::f32::consts::FRAC_PI_2)
         .max(0.0);
     // When 0, dash displacement is isolated (prevents seek/flee overshooting during dashes).
-    let steer_while_dashing = params
-        .get("steer_while_dashing")
-        .copied()
-        .unwrap_or(0.0)
-        > 0.5;
+    let steer_while_dashing = params.get("steer_while_dashing").copied().unwrap_or(0.0) > 0.5;
     // Optional multiplier for seek/flee acceleration band.
-    let move_force_scale = params.get("move_force_scale").copied().unwrap_or(1.0).max(0.0);
+    let move_force_scale = params
+        .get("move_force_scale")
+        .copied()
+        .unwrap_or(1.0)
+        .max(0.0);
     let was_dashing = behavior.timer > 0.0;
 
     if !was_dashing || steer_while_dashing {
@@ -839,23 +858,24 @@ pub fn movement_bird_orbit(
 
         if dist > 0.0001 {
             let toward = to_target / dist;
-            
+
             // Calculate tangent (perpendicular to direction to target)
             // This creates the orbital motion
             let tangent = vec2(-toward.y, toward.x);
-            
+
             // Main orbital velocity
             let orbit_vel = tangent * orbit_speed * behavior.dir;
-            
+
             // Erratic random movement
             let erratic = vec2(
                 macroquad::rand::gen_range(-1.0, 1.0),
                 macroquad::rand::gen_range(-1.0, 1.0),
-            ) * erratic_factor * orbit_speed;
-            
+            ) * erratic_factor
+                * orbit_speed;
+
             // Apply velocity
             entity.vel += orbit_vel + erratic;
-            
+
             // Distance correction - maintain orbit radius
             let radius_diff = dist - orbit_radius;
             if radius_diff > 5.0 {

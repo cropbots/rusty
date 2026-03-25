@@ -1,14 +1,14 @@
-use macroquad::prelude::*;
-use macroquad::file::load_string;
 use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
+use macroquad::file::load_string;
+use macroquad::prelude::*;
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::r#trait::*;
 use crate::particle::ParticleEmitter;
+use crate::r#trait::*;
 
 pub type MovementFn = fn(
     entity: &mut EntityInstance,
@@ -123,8 +123,12 @@ pub struct BehaviorDef {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BehaviorNode {
-    Selector { children: Vec<BehaviorNode> },
-    Sequence { children: Vec<BehaviorNode> },
+    Selector {
+        children: Vec<BehaviorNode>,
+    },
+    Sequence {
+        children: Vec<BehaviorNode>,
+    },
     Condition {
         name: String,
         value: Option<f32>,
@@ -244,7 +248,9 @@ impl EntityDef {
         let tex = &self.texture.texture;
         let draw = &self.texture.draw;
 
-        let dest = draw.dest_size.or_else(|| Some(vec2(tex.width(), tex.height())));
+        let dest = draw
+            .dest_size
+            .or_else(|| Some(vec2(tex.width(), tex.height())));
         let params = DrawTextureParams {
             dest_size: dest,
             rotation: draw.rotation,
@@ -371,7 +377,8 @@ impl EntityInstance {
         for cooldown in self.dash_cooldown_memory.values_mut() {
             *cooldown = (*cooldown - dt).max(0.0);
         }
-        self.dash_cooldown_memory.retain(|_, cooldown| *cooldown > 0.0);
+        self.dash_cooldown_memory
+            .retain(|_, cooldown| *cooldown > 0.0);
         self.vel = Vec2::ZERO;
         let def_flags = db.entities[self.def].flags;
         let dynamic_targeting = (def_flags & DEF_FLAG_DYNAMIC_TARGETING) != 0;
@@ -459,11 +466,7 @@ impl EntityInstance {
             if (behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target")
                 && behavior.timer > 0.0
             {
-                let dash_speed = behavior
-                    .params
-                    .get("dash_speed")
-                    .copied()
-                    .unwrap_or(2200.0);
+                let dash_speed = behavior.params.get("dash_speed").copied().unwrap_or(2200.0);
                 max_speed = max_speed.max(dash_speed.abs());
                 continue;
             }
@@ -481,11 +484,10 @@ impl EntityInstance {
                     .copied()
                     .unwrap_or(1.0)
                     .abs();
-                let move_max_speed = behavior
-                    .params
-                    .get("move_max_speed")
-                    .copied()
-                    .unwrap_or(seek_force.max(flee_force).max(mid_seek_force) * move_force_scale);
+                let move_max_speed =
+                    behavior.params.get("move_max_speed").copied().unwrap_or(
+                        seek_force.max(flee_force).max(mid_seek_force) * move_force_scale,
+                    );
                 max_speed = max_speed.max(move_max_speed.abs());
             }
         }
@@ -504,8 +506,7 @@ impl EntityInstance {
             &mut self.dynamic_collision_scratch,
         );
         let phasing_dash_active = self.behaviors.iter().any(|behavior| {
-            (behavior.name == "dash_at_target"
-                || behavior.name == "curve_dash_at_target")
+            (behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target")
                 && behavior.timer > 0.0
         });
         if phasing_dash_active {
@@ -658,10 +659,14 @@ impl EntityInstance {
 
         let hb = db.entities[self.def].world_hitbox(self.pos);
         if hb.overlaps(&target_hitbox) {
-            ctx.damage_events.push(DamageEvent { amount: damage, target });
+            ctx.damage_events.push(DamageEvent {
+                amount: damage,
+                target,
+            });
             let mut hit_cooldown = 0.3f32;
             for behavior in &self.behaviors {
-                let is_dash = behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target";
+                let is_dash =
+                    behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target";
                 if !is_dash || behavior.timer <= 0.0 {
                     continue;
                 }
@@ -724,10 +729,7 @@ impl MovementRegistry {
     }
 
     pub fn resolve(&self, name: &str) -> MovementFn {
-        self.fns
-            .get(name)
-            .copied()
-            .unwrap_or(movement_idle)
+        self.fns.get(name).copied().unwrap_or(movement_idle)
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -858,7 +860,10 @@ impl EntityContext {
             let pick_nearest = |exclude_current: bool| -> Option<EntityTarget> {
                 let mut best: Option<(f32, EntityTarget)> = None;
                 for candidate in &self.entities {
-                    if candidate.id == entity.uid || !candidate.alive || !mode_accepts(candidate.kind) {
+                    if candidate.id == entity.uid
+                        || !candidate.alive
+                        || !mode_accepts(candidate.kind)
+                    {
                         continue;
                     }
                     if exclude_current && current_id == Some(candidate.id) {
@@ -1204,11 +1209,7 @@ fn action_params(params: &MovementParams, extra: &HashMap<String, YamlValue>) ->
     merged
 }
 
-fn eval_behavior(
-    node: &BehaviorNode,
-    entity: &EntityInstance,
-    ctx: &EntityContext,
-) -> EvalResult {
+fn eval_behavior(node: &BehaviorNode, entity: &EntityInstance, ctx: &EntityContext) -> EvalResult {
     match node {
         BehaviorNode::Action {
             name,
@@ -1234,7 +1235,11 @@ fn eval_behavior(
                 }
             }
         }
-        BehaviorNode::Condition { name, value, always } => {
+        BehaviorNode::Condition {
+            name,
+            value,
+            always,
+        } => {
             let passed = eval_condition(name, *value, entity, ctx);
             EvalResult {
                 primary: None,
@@ -1242,7 +1247,11 @@ fn eval_behavior(
                 ok: if *always { true } else { passed },
             }
         }
-        BehaviorNode::NotCondition { name, value, always } => {
+        BehaviorNode::NotCondition {
+            name,
+            value,
+            always,
+        } => {
             let passed = !eval_condition(name, *value, entity, ctx);
             EvalResult {
                 primary: None,
@@ -1323,7 +1332,12 @@ fn select_actions(
     out
 }
 
-fn eval_condition(name: &str, value: Option<f32>, entity: &EntityInstance, ctx: &EntityContext) -> bool {
+fn eval_condition(
+    name: &str,
+    value: Option<f32>,
+    entity: &EntityInstance,
+    ctx: &EntityContext,
+) -> bool {
     let range = value.unwrap_or(1.0).max(0.0) * ctx.view_height.max(1.0);
     let in_range_sq = range * range;
     let any_kind_in_range = |kind: Option<EntityKind>| {
@@ -1356,9 +1370,7 @@ fn eval_condition(name: &str, value: Option<f32>, entity: &EntityInstance, ctx: 
         "friend_in_range" => any_kind_in_range(Some(EntityKind::Friend)),
         "misc_in_range" => any_kind_in_range(Some(EntityKind::Misc)),
         "has_target" => entity.current_target.is_some(),
-        "dealt_damage" => {
-            entity.dealt_damage_last_tick
-        },
+        "dealt_damage" => entity.dealt_damage_last_tick,
         _ => false,
     }
 }
@@ -1513,9 +1525,12 @@ async fn load_behaviors_wasm(dir: &str) -> Result<Vec<BehaviorDef>, EntityLoadEr
     let files = load_wasm_manifest_files(dir, &["goblin.yaml"]).await;
     for file in files {
         let path = format!("{}/{}", dir, file);
-        let raw_str = load_string(&path)
-            .await
-            .map_err(|e| EntityLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        let raw_str = load_string(&path).await.map_err(|e| {
+            EntityLoadError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
         let raw: BehaviorFile = serde_yaml::from_str(&raw_str)?;
         behaviors.push(BehaviorDef {
             id: raw.id,
@@ -1530,9 +1545,12 @@ async fn load_traits_wasm(dir: &str) -> Result<Vec<TraitDef>, EntityLoadError> {
     let files = load_wasm_manifest_files(dir, &["hostile.yaml"]).await;
     for file in files {
         let path = format!("{}/{}", dir, file);
-        let raw_str = load_string(&path)
-            .await
-            .map_err(|e| EntityLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        let raw_str = load_string(&path).await.map_err(|e| {
+            EntityLoadError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
         let raw: TraitFile = serde_yaml::from_str(&raw_str)?;
         let mut stats = StatBlock::default();
         for (key, value) in raw.stats {
@@ -1573,9 +1591,12 @@ async fn load_entities_from_dir_wasm(
 
     for file in &files {
         let path = format!("{}/{}", dir, file);
-        let raw_str = load_string(&path)
-            .await
-            .map_err(|e| EntityLoadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        let raw_str = load_string(&path).await.map_err(|e| {
+            EntityLoadError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
         let raw: EntityFile = serde_yaml::from_str(&raw_str)?;
         if let Some(kind_override) = raw.kind {
             if kind_override != kind_from_dir {
@@ -1629,9 +1650,7 @@ async fn load_entities_from_dir_wasm(
             draw_params.color[3],
         );
 
-        let dest_size = draw_params
-            .dest_size
-            .map(|v| vec2(v[0], v[1]));
+        let dest_size = draw_params.dest_size.map(|v| vec2(v[0], v[1]));
         let pivot = draw_params.pivot.map(|v| vec2(v[0], v[1]));
 
         let hitbox = Rect::new(
@@ -1763,9 +1782,7 @@ async fn load_entities_from_dir(
             draw_params.color[3],
         );
 
-        let dest_size = draw_params
-            .dest_size
-            .map(|v| vec2(v[0], v[1]));
+        let dest_size = draw_params.dest_size.map(|v| vec2(v[0], v[1]));
         let pivot = draw_params.pivot.map(|v| vec2(v[0], v[1]));
 
         // Center hitbox on the sprite, while allowing YAML x/y to act as a center offset.
@@ -1827,8 +1844,6 @@ fn is_yaml(path: &Path) -> bool {
         .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
         .unwrap_or(false)
 }
-
-
 
 #[derive(Deserialize)]
 struct BehaviorFile {

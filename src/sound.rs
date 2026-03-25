@@ -1,9 +1,9 @@
-use macroquad::audio::{load_sound, play_sound, stop_sound, PlaySoundParams, Sound};
+use crate::helpers::asset_path;
+use macroquad::audio::{PlaySoundParams, Sound, load_sound, play_sound, stop_sound};
 use macroquad::prelude::Vec2;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
-use crate::helpers::asset_path;
 
 #[derive(Debug)]
 pub enum SoundLoadError {
@@ -215,7 +215,12 @@ impl SoundSystem {
             stop_sound(&sound.sound);
             let params = PlaySoundParams {
                 looped: sound.entry.looped,
-                volume: sound.entry.volume * self.channel_volume.get(&sound.entry.channel).copied().unwrap_or(1.0),
+                volume: sound.entry.volume
+                    * self
+                        .channel_volume
+                        .get(&sound.entry.channel)
+                        .copied()
+                        .unwrap_or(1.0),
             };
             play_sound(&sound.sound, params);
         }
@@ -258,7 +263,11 @@ impl SoundSystem {
                 looped: sound.entry.looped,
                 volume: volume
                     * sound.entry.volume
-                    * self.channel_volume.get(&sound.entry.channel).copied().unwrap_or(1.0),
+                    * self
+                        .channel_volume
+                        .get(&sound.entry.channel)
+                        .copied()
+                        .unwrap_or(1.0),
             },
         );
 

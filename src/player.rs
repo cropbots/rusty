@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 
-use crate::helpers::{clamp_hitbox_to_rect, resolve_collisions_axis, Axis};
+use crate::helpers::{Axis, clamp_hitbox_to_rect, resolve_collisions_axis};
 use crate::map::TileMap;
 
 pub struct Player {
@@ -74,10 +74,7 @@ impl Player {
             self.dash_timer = (self.dash_timer - dt).max(0.0);
         }
 
-        if self.dash_timer <= 0.0
-            && self.dash_cooldown <= 0.0
-            && is_key_pressed(KeyCode::Space)
-        {
+        if self.dash_timer <= 0.0 && self.dash_cooldown <= 0.0 && is_key_pressed(KeyCode::Space) {
             let dir = if input.length_squared() > 0.0 {
                 input
             } else {
@@ -114,13 +111,8 @@ impl Player {
         if let Some(grid) = map.grid_index(probe) {
             let radius = collision_radius(map, vel, dt);
             map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
-            let (resolved, vx) = resolve_collisions_axis(
-                self.hitbox,
-                pos,
-                vel.x,
-                &self.collision_scratch,
-                Axis::X,
-            );
+            let (resolved, vx) =
+                resolve_collisions_axis(self.hitbox, pos, vel.x, &self.collision_scratch, Axis::X);
             pos = resolved;
             vel.x = vx;
         }
@@ -130,13 +122,8 @@ impl Player {
         if let Some(grid) = map.grid_index(probe) {
             let radius = collision_radius(map, vel, dt);
             map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
-            let (resolved, vy) = resolve_collisions_axis(
-                self.hitbox,
-                pos,
-                vel.y,
-                &self.collision_scratch,
-                Axis::Y,
-            );
+            let (resolved, vy) =
+                resolve_collisions_axis(self.hitbox, pos, vel.y, &self.collision_scratch, Axis::Y);
             pos = resolved;
             vel.y = vy;
         }
@@ -148,7 +135,6 @@ impl Player {
         self.pos = clamp_hitbox_to_rect(self.hitbox, self.pos, border);
     }
 
-
     pub fn draw(&self) {
         let scale = 0.5;
         let center_x = self.texture.width() as f32 * scale / 2.0;
@@ -159,7 +145,10 @@ impl Player {
             self.pos.y - center_y,
             WHITE,
             DrawTextureParams {
-                dest_size: Some(Vec2::new(self.texture.width() / 2 as f32 * scale, self.texture.height() / 2 as f32 * scale)),
+                dest_size: Some(Vec2::new(
+                    self.texture.width() / 2 as f32 * scale,
+                    self.texture.height() / 2 as f32 * scale,
+                )),
                 flip_y: false,
                 ..Default::default()
             },
