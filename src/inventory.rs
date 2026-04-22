@@ -216,6 +216,18 @@ impl StackInventory {
         }
     }
 
+    fn bind_item_to_slot(&mut self, item: ItemId, slot: usize) {
+        // Enforce uniqueness: if this item is in another slot, clear that slot
+        for i in 0..HOTBAR_SIZE {
+            if i != slot && self.hotbar[i] == Some(item) {
+                self.hotbar[i] = None;
+            }
+        }
+        self.hotbar[slot] = Some(item);
+        self.selected_hotbar = slot;
+        self.selected_item = Some(item);
+    }
+
     pub fn seed_demo(catalog: &InventoryCatalog) -> Self {
         let mut inventory = Self::new();
         for item in catalog.iter_ids() {
@@ -362,8 +374,7 @@ impl StackInventory {
 
                 for card in &layout.item_cards {
                     if card.rect.contains(mouse) {
-                        self.selected_item = Some(card.item);
-                        self.hotbar[self.selected_hotbar] = Some(card.item);
+                        self.bind_item_to_slot(card.item, self.selected_hotbar);
                         return;
                     }
                 }
@@ -373,12 +384,14 @@ impl StackInventory {
         if is_mouse_button_pressed(MouseButton::Right) && self.open {
             for card in &layout.item_cards {
                 if card.rect.contains(mouse) {
-                    self.selected_item = Some(card.item);
-                    if let Some(slot) = self.hotbar.iter().position(|entry| entry.is_none()) {
-                        self.hotbar[slot] = Some(card.item);
-                        self.selected_hotbar = slot;
+                    // If already pinned, just select that slot
+                    if let Some(existing_slot) = self.hotbar.iter().position(|&s| s == Some(card.item)) {
+                        self.selected_hotbar = existing_slot;
+                        self.selected_item = Some(card.item);
+                    } else if let Some(empty_slot) = self.hotbar.iter().position(|entry| entry.is_none()) {
+                        self.bind_item_to_slot(card.item, empty_slot);
                     } else {
-                        self.hotbar[self.selected_hotbar] = Some(card.item);
+                        self.bind_item_to_slot(card.item, self.selected_hotbar);
                     }
                     return;
                 }
@@ -486,6 +499,9 @@ impl StackInventory {
             } else {
                 Color::from_hex(0x17212B)
             };
+            
+            let pinned = self.hotbar.iter().any(|&s| s == Some(card.item));
+            
             draw_rectangle(card.rect.x, card.rect.y, card.rect.w, card.rect.h, fill);
             draw_rectangle_lines(
                 card.rect.x,
@@ -493,20 +509,30 @@ impl StackInventory {
                 card.rect.w,
                 card.rect.h,
                 1.0,
-                border,
+                if pinned && !selected { Color::from_hex(0x456078) } else { border },
             );
+
+            if pinned {
+                draw_rectangle(
+                    card.rect.x + card.rect.w - 6.0,
+                    card.rect.y + 4.0,
+                    2.0,
+                    card.rect.h - 8.0,
+                    def.accent,
+                );
+            }
 
             let icon_rect = Rect::new(card.rect.x + 6.0, card.rect.y + 5.0, 30.0, 30.0);
             draw_icon_frame(icon_rect, def.accent);
             draw_item_icon(def, tileset, icon_rect);
 
             draw_text_ex(
-                &fit_label(&def.short_name, 12),
+                &fit_label(&def.short_name, 14),
                 card.rect.x + 44.0,
                 card.rect.y + 18.0,
                 TextParams {
                     font_size: 17,
-                    color: WHITE,
+                    color: if pinned { Color::from_hex(0xEDF4FA) } else { Color::from_hex(0xCED9E3) },
                     ..Default::default()
                 },
             );
@@ -516,7 +542,7 @@ impl StackInventory {
                 card.rect.y + 33.0,
                 TextParams {
                     font_size: 15,
-                    color: Color::from_hex(0x9FB2C5),
+                    color: if selected { Color::from_hex(0xC2D1E0) } else { Color::from_hex(0x8A9FB2) },
                     ..Default::default()
                 },
             );
@@ -546,19 +572,19 @@ impl StackInventory {
         let footer_text = if let Some(item) = self.selected_item {
             let def = catalog.get(item);
             format!(
-                "{} selected  |  left click: bind to active slot  |  right click: quick pin",
+                "{}  |  LMB: Bind to slot  |  RMB: Quick Pin",
                 def.name
             )
         } else {
             "Select a stack to pin it to the hotbar".to_string()
         };
         draw_text_ex(
-            &fit_label(&footer_text, 72),
+            &fit_label(&footer_text, 64),
             footer.x + 10.0,
             footer.y + 21.0,
             TextParams {
                 font_size: 15,
-                color: Color::from_hex(0xA7B7C8),
+                color: Color::from_hex(0x9FB2C5),
                 ..Default::default()
             },
         );
@@ -792,19 +818,31 @@ impl StackInventory {
 }
 
 fn draw_panel_shell(rect: Rect, fill: Color, stroke: Color) {
+    // Drop shadow
     draw_rectangle(
-        rect.x,
-        rect.y,
+        rect.x + 4.0,
+        rect.y + 4.0,
         rect.w,
         rect.h,
-        Color::new(0.01, 0.02, 0.03, 0.35),
+        Color::new(0.0, 0.0, 0.0, 0.4),
     );
-    draw_rectangle(rect.x + 2.0, rect.y + 2.0, rect.w - 4.0, rect.h - 4.0, fill);
+    // Main fill
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
+    // Bevel/glow inner highlight
     draw_rectangle_lines(
         rect.x + 1.0,
         rect.y + 1.0,
         rect.w - 2.0,
         rect.h - 2.0,
+        1.0,
+        Color::new(1.0, 1.0, 1.0, 0.05),
+    );
+    // Main stroke
+    draw_rectangle_lines(
+        rect.x,
+        rect.y,
+        rect.w,
+        rect.h,
         2.0,
         stroke,
     );
@@ -936,5 +974,22 @@ mod tests {
         assert_eq!(removed, 5);
         assert_eq!(inventory.amount(item), 0);
         assert_eq!(inventory.hotbar[0], None);
+    }
+
+    #[test]
+    fn hotbar_enforces_uniqueness() {
+        let catalog = test_catalog();
+        let mut inventory = StackInventory::new();
+        let item = catalog.iter_ids().next().unwrap();
+        inventory.add(item, 10);
+        
+        // Bind to slot 0
+        inventory.bind_item_to_slot(item, 0);
+        assert_eq!(inventory.hotbar[0], Some(item));
+        
+        // Bind to slot 1
+        inventory.bind_item_to_slot(item, 1);
+        assert_eq!(inventory.hotbar[1], Some(item));
+        assert_eq!(inventory.hotbar[0], None, "Item should have been removed from slot 0");
     }
 }
