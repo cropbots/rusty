@@ -1,21 +1,25 @@
-use std::array;
 use std::collections::HashMap;
 
 use macroquad::prelude::*;
 
 use crate::map::TileSet;
 
-pub const HOTBAR_SIZE: usize = 8;
+pub const HOTBAR_SIZE: usize = 10;
 
+const INVENTORY_WHEEL_SLOTS: usize = 15;
 const HOTBAR_SLOT_SIZE: f32 = 52.0;
-const HOTBAR_GAP: f32 = 10.0;
+const HUD_SLOT_SCALE: f32 = 1.2;
 const HOTBAR_MARGIN: f32 = 14.0;
-const PANEL_MARGIN: f32 = 14.0;
-const PANEL_HEADER_H: f32 = 36.0;
-const PANEL_TAB_H: f32 = 30.0;
-const PANEL_FOOTER_H: f32 = 32.0;
-const ITEM_CARD_H: f32 = 42.0;
-const ITEM_CARD_GAP: f32 = 8.0;
+const WHEEL_SLOT_SIZE: f32 = 64.0;
+const WHEEL_CENTER_SLOT_SIZE: f32 = 82.0;
+const WHEEL_RADIUS: f32 = 160.0;
+const WHEEL_RING_THICKNESS: f32 = 85.0; // Configurable: thickness of the outer ring
+const WHEEL_ITEM_SCALE: f32 = 0.9; // Configurable: 0.9x smaller items
+const WHEEL_ITEM_ALIGNMENT: f32 = 0.5; // Configurable: 0.0=inner edge, 0.5=middle, 1.0=outer edge
+const WHEEL_RING_OUTLINE: f32 = 5.0; // Configurable: thickness of the black outlines
+const WHEEL_SPIN_SPEED: f32 = 0.28;
+const UI_BASE_WIDTH: f32 = 960.0;
+const UI_BASE_HEIGHT: f32 = 540.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ItemId(pub usize);
@@ -27,26 +31,6 @@ pub enum ItemCategory {
     Materials,
     Tiles,
     Utility,
-}
-
-impl ItemCategory {
-    pub const FILTERS: [ItemCategory; 5] = [
-        ItemCategory::All,
-        ItemCategory::Resources,
-        ItemCategory::Materials,
-        ItemCategory::Tiles,
-        ItemCategory::Utility,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            ItemCategory::All => "All",
-            ItemCategory::Resources => "Resources",
-            ItemCategory::Materials => "Materials",
-            ItemCategory::Tiles => "Tiles",
-            ItemCategory::Utility => "Utility",
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -177,28 +161,22 @@ impl InventoryCatalog {
 }
 
 #[derive(Clone, Copy)]
-struct ItemCardLayout {
+struct WheelSlotLayout {
     item: ItemId,
     rect: Rect,
+    key_index: Option<usize>,
 }
 
 struct InventoryLayout {
-    hotbar_rect: Rect,
-    hotbar_slots: [Rect; HOTBAR_SIZE],
-    panel_rect: Option<Rect>,
-    tab_rects: Vec<(ItemCategory, Rect)>,
-    item_cards: Vec<ItemCardLayout>,
-    list_rect: Option<Rect>,
+    hud_rect: Rect,
+    wheel_rect: Option<Rect>,
+    wheel_slots: Vec<WheelSlotLayout>,
 }
 
 pub struct StackInventory {
     counts: HashMap<ItemId, u32>,
     order: Vec<ItemId>,
-    hotbar: [Option<ItemId>; HOTBAR_SIZE],
-    selected_hotbar: usize,
-    selected_filter: ItemCategory,
     selected_item: Option<ItemId>,
-    scroll_rows: usize,
     open: bool,
 }
 
@@ -207,25 +185,9 @@ impl StackInventory {
         Self {
             counts: HashMap::new(),
             order: Vec::new(),
-            hotbar: [None; HOTBAR_SIZE],
-            selected_hotbar: 0,
-            selected_filter: ItemCategory::All,
             selected_item: None,
-            scroll_rows: 0,
             open: false,
         }
-    }
-
-    fn bind_item_to_slot(&mut self, item: ItemId, slot: usize) {
-        // Enforce uniqueness: if this item is in another slot, clear that slot
-        for i in 0..HOTBAR_SIZE {
-            if i != slot && self.hotbar[i] == Some(item) {
-                self.hotbar[i] = None;
-            }
-        }
-        self.hotbar[slot] = Some(item);
-        self.selected_hotbar = slot;
-        self.selected_item = Some(item);
     }
 
     pub fn seed_demo(catalog: &InventoryCatalog) -> Self {
@@ -241,16 +203,7 @@ impl StackInventory {
             };
             inventory.add(item, amount.max(1));
         }
-
-        let default_hotbar: Vec<ItemId> = inventory
-            .visible_items(catalog, ItemCategory::All)
-            .into_iter()
-            .take(HOTBAR_SIZE)
-            .collect();
-        for (slot, item) in default_hotbar.into_iter().enumerate() {
-            inventory.hotbar[slot] = Some(item);
-        }
-        inventory.selected_item = inventory.hotbar[0];
+        inventory.selected_item = inventory.priority_items().first().copied();
         inventory
     }
 
@@ -263,6 +216,9 @@ impl StackInventory {
             self.order.push(item);
         }
         *entry = entry.saturating_add(amount);
+        if self.selected_item.is_none() {
+            self.selected_item = Some(item);
+        }
     }
 
     pub fn remove(&mut self, item: ItemId, amount: u32) -> u32 {
@@ -277,13 +233,8 @@ impl StackInventory {
         if *existing == 0 {
             self.counts.remove(&item);
             self.order.retain(|candidate| *candidate != item);
-            for slot in &mut self.hotbar {
-                if *slot == Some(item) {
-                    *slot = None;
-                }
-            }
             if self.selected_item == Some(item) {
-                self.selected_item = self.selected_hotbar_item();
+                self.selected_item = self.priority_items().first().copied();
             }
         }
         removed
@@ -295,11 +246,11 @@ impl StackInventory {
 
     pub fn captures_pointer(&self, mouse: Vec2, catalog: &InventoryCatalog) -> bool {
         let layout = self.layout(catalog);
-        if layout.hotbar_rect.contains(mouse) {
+        if layout.hud_rect.contains(mouse) {
             return true;
         }
         layout
-            .panel_rect
+            .wheel_rect
             .map(|rect| rect.contains(mouse))
             .unwrap_or(false)
     }
@@ -318,561 +269,362 @@ impl StackInventory {
                 4 => KeyCode::Key5,
                 5 => KeyCode::Key6,
                 6 => KeyCode::Key7,
-                _ => KeyCode::Key8,
+                7 => KeyCode::Key8,
+                8 => KeyCode::Key9,
+                9 => KeyCode::Key0,
+                _ => KeyCode::Unknown,
             };
             if is_key_pressed(key) {
-                self.selected_hotbar = slot;
-                self.selected_item = self.hotbar[slot];
+                self.selected_item = self.priority_items().get(slot).copied();
             }
         }
 
         if is_key_pressed(KeyCode::Q) {
-            self.cycle_hotbar(-1);
+            self.cycle_selection(-1);
         }
         if is_key_pressed(KeyCode::E) {
-            self.cycle_hotbar(1);
+            self.cycle_selection(1);
         }
 
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let layout = self.layout(catalog);
         let (_, wheel_y) = mouse_wheel();
-        let pointer_on_panel = layout
-            .panel_rect
+        let pointer_on_wheel = layout
+            .wheel_rect
             .map(|rect| rect.contains(mouse))
             .unwrap_or(false);
-
-        if wheel_y.abs() > f32::EPSILON {
-            if self.open && pointer_on_panel {
-                let max_rows = self.max_scroll_rows(catalog, &layout);
-                if wheel_y < 0.0 {
-                    self.scroll_rows = (self.scroll_rows + 1).min(max_rows);
-                } else {
-                    self.scroll_rows = self.scroll_rows.saturating_sub(1);
-                }
-            } else {
-                self.cycle_hotbar(if wheel_y > 0.0 { -1 } else { 1 });
-            }
+        if wheel_y.abs() > f32::EPSILON && (!self.open || pointer_on_wheel) {
+            self.cycle_selection(if wheel_y > 0.0 { -1 } else { 1 });
         }
 
         if is_mouse_button_pressed(MouseButton::Left) {
-            for (idx, rect) in layout.hotbar_slots.iter().enumerate() {
-                if rect.contains(mouse) {
-                    self.selected_hotbar = idx;
-                    self.selected_item = self.hotbar[idx];
-                    return;
-                }
+            if layout.hud_rect.contains(mouse) {
+                self.open = !self.open;
+                return;
             }
 
             if self.open {
-                for (category, rect) in &layout.tab_rects {
-                    if rect.contains(mouse) {
-                        self.selected_filter = *category;
-                        self.scroll_rows = 0;
-                        return;
-                    }
-                }
-
-                for card in &layout.item_cards {
-                    if card.rect.contains(mouse) {
-                        self.bind_item_to_slot(card.item, self.selected_hotbar);
+                for slot in &layout.wheel_slots {
+                    if slot.rect.contains(mouse) {
+                        self.selected_item = Some(slot.item);
+                        self.open = false;
                         return;
                     }
                 }
             }
         }
 
-        if is_mouse_button_pressed(MouseButton::Right) && self.open {
-            for card in &layout.item_cards {
-                if card.rect.contains(mouse) {
-                    // If already pinned, just select that slot
-                    if let Some(existing_slot) = self.hotbar.iter().position(|&s| s == Some(card.item)) {
-                        self.selected_hotbar = existing_slot;
-                        self.selected_item = Some(card.item);
-                    } else if let Some(empty_slot) = self.hotbar.iter().position(|entry| entry.is_none()) {
-                        self.bind_item_to_slot(card.item, empty_slot);
-                    } else {
-                        self.bind_item_to_slot(card.item, self.selected_hotbar);
-                    }
-                    return;
-                }
-            }
+        if self.selected_item.is_none_or(|item| self.amount(item) == 0) {
+            self.selected_item = self.priority_items().first().copied();
         }
-
-        self.sanitize_hotbar();
     }
 
-    pub fn draw(&self, catalog: &InventoryCatalog, tileset: &TileSet) {
+    pub fn draw(&self, catalog: &InventoryCatalog, tileset: &TileSet, hotbar_slot: &Texture2D) {
         let layout = self.layout(catalog);
-        if let Some(panel_rect) = layout.panel_rect {
-            self.draw_panel(catalog, tileset, panel_rect, &layout);
+        if self.open {
+            self.draw_inventory_wheel(catalog, tileset, hotbar_slot, &layout);
         }
-        self.draw_hotbar(catalog, tileset, &layout);
+        self.draw_hud_slot(catalog, tileset, hotbar_slot, &layout);
     }
 
-    fn draw_panel(
+    fn draw_inventory_wheel(
         &self,
         catalog: &InventoryCatalog,
         tileset: &TileSet,
-        panel_rect: Rect,
+        hotbar_slot: &Texture2D,
         layout: &InventoryLayout,
     ) {
-        draw_panel_shell(
-            panel_rect,
-            Color::from_hex(0x121922),
-            Color::from_hex(0x29435C),
+        let Some(wheel_rect) = layout.wheel_rect else {
+            return;
+        };
+        let center = vec2(
+            wheel_rect.x + wheel_rect.w * 0.5,
+            wheel_rect.y + wheel_rect.h * 0.5,
+        );
+        let outer_ring_radius = WHEEL_RADIUS;
+        let outer_ring_thickness = WHEEL_RING_THICKNESS;
+        let outer_ring_center_radius = outer_ring_radius - outer_ring_thickness + WHEEL_RING_OUTLINE;
+        let center_circle_radius = WHEEL_CENTER_SLOT_SIZE * 0.72;
+
+        draw_circle(
+            center.x,
+            center.y,
+            center_circle_radius,
+            Color::new(0.0, 0.0, 0.0, 0.46),
+        );
+        draw_circle_lines(
+            center.x,
+            center.y,
+            center_circle_radius,
+            WHEEL_RING_OUTLINE,
+            BLACK,
+        );
+        draw_circle_lines(
+            center.x,
+            center.y,
+            outer_ring_center_radius,
+            outer_ring_thickness - WHEEL_RING_OUTLINE,
+            Color::new(0.0, 0.0, 0.0, 0.46),
+        );
+        draw_circle_lines(
+            center.x,
+            center.y,
+            outer_ring_radius - outer_ring_thickness,
+            WHEEL_RING_OUTLINE,
+            BLACK,
+        );
+        draw_circle_lines(
+            center.x,
+            center.y,
+            outer_ring_radius,
+            WHEEL_RING_OUTLINE,
+            BLACK,
         );
 
-        draw_text_ex(
-            "Inventory",
-            panel_rect.x + 14.0,
-            panel_rect.y + 24.0,
-            TextParams {
-                font_size: 24,
-                color: Color::from_hex(0xEEF4FA),
-                ..Default::default()
-            },
+        let center_slot = Rect::new(
+            center.x - WHEEL_CENTER_SLOT_SIZE * 0.5,
+            center.y - WHEEL_CENTER_SLOT_SIZE * 0.5,
+            WHEEL_CENTER_SLOT_SIZE,
+            WHEEL_CENTER_SLOT_SIZE,
         );
-
-        let distinct = self.order.len();
-        let total: u64 = self.counts.values().map(|value| *value as u64).sum();
-        let summary = format!("{distinct} stacks  |  {total} total");
-        draw_text_ex(
-            &summary,
-            panel_rect.x + panel_rect.w - 170.0,
-            panel_rect.y + 23.0,
-            TextParams {
-                font_size: 16,
-                color: Color::from_hex(0x9FB2C5),
-                ..Default::default()
-            },
-        );
-
-        for (category, rect) in &layout.tab_rects {
-            let active = *category == self.selected_filter;
-            let fill = if active {
-                Color::from_hex(0x385C7B)
-            } else {
-                Color::from_hex(0x1B2732)
-            };
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
+        self.draw_slot_frame(hotbar_slot, center_slot, 1.0);
+        if let Some(item) = self.selected_item {
+            let def = catalog.get(item);
             draw_rectangle_lines(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                1.0,
-                if active {
-                    Color::from_hex(0x8FD3FF)
-                } else {
-                    Color::from_hex(0x355066)
-                },
+                center_slot.x,
+                center_slot.y,
+                center_slot.w,
+                center_slot.h,
+                3.0,
+                def.accent,
             );
-            draw_centered_label(category.label(), *rect, 17, WHITE);
+            let icon_pad = 4.0;
+            let icon_rect = Rect::new(
+                center_slot.x + icon_pad,
+                center_slot.y + icon_pad,
+                center_slot.w - icon_pad * 2.0,
+                center_slot.h - icon_pad * 2.0,
+            );
+            draw_item_icon(def, tileset, icon_rect);
+            draw_stack_amount(center_slot, self.amount(item), 13, 0.72);
         }
 
-        if let Some(list_rect) = layout.list_rect {
-            draw_rectangle(
-                list_rect.x,
-                list_rect.y,
-                list_rect.w,
-                list_rect.h,
-                Color::new(0.02, 0.04, 0.06, 0.18),
-            );
-        }
-
-        for card in &layout.item_cards {
-            let def = catalog.get(card.item);
-            let amount = self.amount(card.item);
-            let selected = self.selected_item == Some(card.item);
-            let border = if selected {
-                def.accent
-            } else {
-                Color::from_hex(0x2E475E)
-            };
-            let fill = if selected {
-                Color::new(
-                    def.accent.r * 0.25,
-                    def.accent.g * 0.25,
-                    def.accent.b * 0.25,
-                    0.95,
-                )
-            } else {
-                Color::from_hex(0x17212B)
-            };
-            
-            let pinned = self.hotbar.iter().any(|&s| s == Some(card.item));
-            
-            draw_rectangle(card.rect.x, card.rect.y, card.rect.w, card.rect.h, fill);
-            draw_rectangle_lines(
-                card.rect.x,
-                card.rect.y,
-                card.rect.w,
-                card.rect.h,
-                1.0,
-                if pinned && !selected { Color::from_hex(0x456078) } else { border },
-            );
-
-            if pinned {
-                draw_rectangle(
-                    card.rect.x + card.rect.w - 6.0,
-                    card.rect.y + 4.0,
-                    2.0,
-                    card.rect.h - 8.0,
-                    def.accent,
+        for slot in &layout.wheel_slots {
+            let selected = self.selected_item == Some(slot.item);
+            self.draw_slot_frame(hotbar_slot, slot.rect, if selected { 1.0 } else { 0.92 });
+            if selected {
+                draw_rectangle_lines(
+                    slot.rect.x,
+                    slot.rect.y,
+                    slot.rect.w,
+                    slot.rect.h,
+                    3.0,
+                    catalog.get(slot.item).accent,
                 );
             }
 
-            let icon_rect = Rect::new(card.rect.x + 6.0, card.rect.y + 5.0, 30.0, 30.0);
-            draw_icon_frame(icon_rect, def.accent);
-            draw_item_icon(def, tileset, icon_rect);
-
-            draw_text_ex(
-                &fit_label(&def.short_name, 14),
-                card.rect.x + 44.0,
-                card.rect.y + 18.0,
-                TextParams {
-                    font_size: 17,
-                    color: if pinned { Color::from_hex(0xEDF4FA) } else { Color::from_hex(0xCED9E3) },
-                    ..Default::default()
-                },
-            );
-            draw_text_ex(
-                &format_stack_count(amount),
-                card.rect.x + 44.0,
-                card.rect.y + 33.0,
-                TextParams {
-                    font_size: 15,
-                    color: if selected { Color::from_hex(0xC2D1E0) } else { Color::from_hex(0x8A9FB2) },
-                    ..Default::default()
-                },
-            );
-        }
-
-        let footer = Rect::new(
-            panel_rect.x + 10.0,
-            panel_rect.y + panel_rect.h - PANEL_FOOTER_H - 8.0,
-            panel_rect.w - 20.0,
-            PANEL_FOOTER_H,
-        );
-        draw_rectangle(
-            footer.x,
-            footer.y,
-            footer.w,
-            footer.h,
-            Color::from_hex(0x151D24),
-        );
-        draw_rectangle_lines(
-            footer.x,
-            footer.y,
-            footer.w,
-            footer.h,
-            1.0,
-            Color::from_hex(0x304455),
-        );
-        let footer_text = if let Some(item) = self.selected_item {
-            let def = catalog.get(item);
-            format!(
-                "{}  |  LMB: Bind to slot  |  RMB: Quick Pin",
-                def.name
-            )
-        } else {
-            "Select a stack to pin it to the hotbar".to_string()
-        };
-        draw_text_ex(
-            &fit_label(&footer_text, 64),
-            footer.x + 10.0,
-            footer.y + 21.0,
-            TextParams {
-                font_size: 15,
-                color: Color::from_hex(0x9FB2C5),
-                ..Default::default()
-            },
-        );
-    }
-
-    fn draw_hotbar(&self, catalog: &InventoryCatalog, tileset: &TileSet, layout: &InventoryLayout) {
-        let bar = layout.hotbar_rect;
-        draw_panel_shell(bar, Color::from_hex(0x111820), Color::from_hex(0x2E495F));
-
-        for (idx, rect) in layout.hotbar_slots.iter().enumerate() {
-            let selected = idx == self.selected_hotbar;
-            let item = self.hotbar[idx];
-            let accent = item
-                .map(|id| catalog.get(id).accent)
-                .unwrap_or(Color::from_hex(0x4D6374));
-            let fill = if selected {
-                Color::new(accent.r * 0.3, accent.g * 0.3, accent.b * 0.3, 1.0)
-            } else {
-                Color::from_hex(0x1B232B)
-            };
-            draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
-            draw_rectangle_lines(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                1.0,
-                if selected {
-                    accent
-                } else {
-                    Color::from_hex(0x40505D)
-                },
-            );
-
-            draw_text_ex(
-                &(idx + 1).to_string(),
-                rect.x + 4.0,
-                rect.y + 12.0,
-                TextParams {
-                    font_size: 13,
-                    color: Color::from_hex(0x8DA4B8),
-                    ..Default::default()
-                },
-            );
-
-            if let Some(item) = item {
-                let def = catalog.get(item);
-                let icon_rect =
-                    Rect::new(rect.x + 8.0, rect.y + 10.0, rect.w - 16.0, rect.h - 20.0);
-                draw_item_icon(def, tileset, icon_rect);
-                let amount = format_stack_count(self.amount(item));
-                let label_metrics = measure_text(&amount, None, 16, 1.0);
-                draw_rectangle(
-                    rect.x + rect.w - label_metrics.width - 12.0,
-                    rect.y + rect.h - 18.0,
-                    label_metrics.width + 8.0,
-                    14.0,
-                    Color::new(0.03, 0.05, 0.07, 0.78),
-                );
+            if let Some(key_index) = slot.key_index {
                 draw_text_ex(
-                    &amount,
-                    rect.x + rect.w - label_metrics.width - 8.0,
-                    rect.y + rect.h - 6.0,
+                    hotbar_key_label(key_index),
+                    slot.rect.x + 4.0,
+                    slot.rect.y + 12.0,
                     TextParams {
-                        font_size: 16,
-                        color: WHITE,
+                        font_size: 12,
+                        color: Color::from_hex(0xF6D98F),
                         ..Default::default()
                     },
                 );
             }
-        }
 
-        if let Some(item) = self.selected_hotbar_item() {
-            let def = catalog.get(item);
-            let label = format!("{}  |  {}", def.name, format_stack_count(self.amount(item)));
-            draw_text_ex(
-                &fit_label(&label, 34),
-                bar.x + 12.0,
-                bar.y - 10.0,
-                TextParams {
-                    font_size: 18,
-                    color: Color::from_hex(0xEDF4FA),
-                    ..Default::default()
-                },
+            let def = catalog.get(slot.item);
+            let icon_pad = if selected { 5.0 } else { 6.0 };
+            let icon_rect = Rect::new(
+                slot.rect.x + icon_pad,
+                slot.rect.y + icon_pad,
+                slot.rect.w - icon_pad * 2.0,
+                slot.rect.h - icon_pad * 2.0,
             );
+            draw_item_icon(def, tileset, icon_rect);
+            draw_stack_amount(slot.rect, self.amount(slot.item), 13, 0.72);
         }
     }
 
-    fn layout(&self, catalog: &InventoryCatalog) -> InventoryLayout {
-        let hotbar_w =
-            HOTBAR_SIZE as f32 * HOTBAR_SLOT_SIZE + (HOTBAR_SIZE as f32 - 1.0) * HOTBAR_GAP + 20.0;
-        let hotbar_h = HOTBAR_SLOT_SIZE + 18.0;
-        let hotbar_rect = Rect::new(
-            (screen_width() - hotbar_w) * 0.5,
-            screen_height() - hotbar_h - HOTBAR_MARGIN,
-            hotbar_w,
-            hotbar_h,
-        );
-        let hotbar_slots = array::from_fn(|idx| {
-            Rect::new(
-                hotbar_rect.x + 10.0 + idx as f32 * (HOTBAR_SLOT_SIZE + HOTBAR_GAP),
-                hotbar_rect.y + 9.0,
-                HOTBAR_SLOT_SIZE,
-                HOTBAR_SLOT_SIZE,
-            )
-        });
+    fn draw_hud_slot(
+        &self,
+        catalog: &InventoryCatalog,
+        tileset: &TileSet,
+        hotbar_slot: &Texture2D,
+        layout: &InventoryLayout,
+    ) {
+        let rect = layout.hud_rect;
+        self.draw_slot_frame(hotbar_slot, rect, 1.0);
 
-        let mut panel_rect = None;
-        let mut tab_rects = Vec::new();
-        let mut item_cards = Vec::new();
-        let mut list_rect = None;
+        if let Some(item) = self.selected_item {
+            let def = catalog.get(item);
+            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 3.0, def.accent);
+            let icon_pad = 7.5;
+            let icon_rect = Rect::new(
+                rect.x + icon_pad,
+                rect.y + icon_pad,
+                rect.w - icon_pad * 2.0,
+                rect.h - icon_pad * 2.0,
+            );
+            draw_item_icon(def, tileset, icon_rect);
+            draw_stack_amount(rect, self.amount(item), 13, 0.64);
+        }
+    }
+
+    fn draw_slot_frame(&self, hotbar_slot: &Texture2D, rect: Rect, alpha: f32) {
+        draw_texture_ex(
+            hotbar_slot,
+            rect.x,
+            rect.y,
+            Color::new(1.0, 1.0, 1.0, alpha.clamp(0.0, 1.0)),
+            DrawTextureParams {
+                dest_size: Some(vec2(rect.w, rect.h)),
+                ..Default::default()
+            },
+        );
+    }
+
+    fn layout(&self, catalog: &InventoryCatalog) -> InventoryLayout {
+        let ui_scale = resolution_ui_scale();
+        let hud_size = HOTBAR_SLOT_SIZE * HUD_SLOT_SCALE * ui_scale;
+        let hud_margin = HOTBAR_MARGIN * ui_scale;
+        let hud_rect = Rect::new(hud_margin, hud_margin, hud_size, hud_size);
+        let mut wheel_rect = None;
+        let mut wheel_slots = Vec::new();
 
         if self.open {
-            let panel_w = screen_width().min(520.0) - PANEL_MARGIN * 2.0;
-            let panel_h = screen_height().min(430.0) - PANEL_MARGIN * 2.0;
-            let x = PANEL_MARGIN;
-            let y = (hotbar_rect.y - panel_h - 10.0).max(PANEL_MARGIN);
-            let rect = Rect::new(x, y, panel_w.max(320.0), panel_h.max(240.0));
-            panel_rect = Some(rect);
+            let center = vec2(screen_width() * 0.5, screen_height() * 0.5);
+            let wheel_size = (WHEEL_RADIUS + WHEEL_SLOT_SIZE * 0.75) * 2.0;
+            wheel_rect = Some(Rect::new(
+                center.x - wheel_size * 0.5,
+                center.y - wheel_size * 0.5,
+                wheel_size,
+                wheel_size,
+            ));
 
-            let tab_y = rect.y + PANEL_HEADER_H + 10.0;
-            let tab_w = (rect.w - 20.0 - (ItemCategory::FILTERS.len() as f32 - 1.0) * 6.0)
-                / ItemCategory::FILTERS.len() as f32;
-            for (idx, category) in ItemCategory::FILTERS.iter().enumerate() {
-                tab_rects.push((
-                    *category,
-                    Rect::new(
-                        rect.x + 10.0 + idx as f32 * (tab_w + 6.0),
-                        tab_y,
-                        tab_w,
-                        PANEL_TAB_H,
-                    ),
-                ));
-            }
-
-            let content_top = tab_y + PANEL_TAB_H + 10.0;
-            let content_bottom = rect.y + rect.h - PANEL_FOOTER_H - 18.0;
-            let content_rect = Rect::new(
-                rect.x + 10.0,
-                content_top,
-                rect.w - 20.0,
-                content_bottom - content_top,
-            );
-            list_rect = Some(content_rect);
-
-            let columns = if content_rect.w >= 400.0 { 2 } else { 1 };
-            let card_w = (content_rect.w - (columns as f32 - 1.0) * ITEM_CARD_GAP) / columns as f32;
-            let row_step = ITEM_CARD_H + ITEM_CARD_GAP;
-            let filtered = self.visible_items(catalog, self.selected_filter);
-            let max_visible_rows = (content_rect.h / row_step).floor().max(1.0) as usize;
-            let start_index = self.scroll_rows * columns;
-
-            for (visible_idx, item) in filtered.into_iter().skip(start_index).enumerate() {
-                let row = visible_idx / columns;
-                if row >= max_visible_rows {
-                    break;
-                }
-                let col = visible_idx % columns;
-                item_cards.push(ItemCardLayout {
+            let items = self.wheel_items(catalog);
+            let priority = self.priority_items();
+            let spin = get_time() as f32 * WHEEL_SPIN_SPEED;
+            let count = items.len().max(1) as f32;
+            let item_radius = WHEEL_RADIUS - WHEEL_RING_THICKNESS * (1.0 - WHEEL_ITEM_ALIGNMENT);
+            let scaled_slot_size = WHEEL_SLOT_SIZE * WHEEL_ITEM_SCALE;
+            for (idx, item) in items.into_iter().enumerate() {
+                let angle =
+                    spin + idx as f32 / count * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+                let pos = center + vec2(angle.cos(), angle.sin()) * item_radius;
+                wheel_slots.push(WheelSlotLayout {
                     item,
                     rect: Rect::new(
-                        content_rect.x + col as f32 * (card_w + ITEM_CARD_GAP),
-                        content_rect.y + row as f32 * row_step,
-                        card_w,
-                        ITEM_CARD_H,
+                        pos.x - scaled_slot_size * 0.5,
+                        pos.y - scaled_slot_size * 0.5,
+                        scaled_slot_size,
+                        scaled_slot_size,
                     ),
+                    key_index: priority.iter().position(|candidate| *candidate == item),
                 });
             }
         }
 
         InventoryLayout {
-            hotbar_rect,
-            hotbar_slots,
-            panel_rect,
-            tab_rects,
-            item_cards,
-            list_rect,
+            hud_rect,
+            wheel_rect,
+            wheel_slots,
         }
     }
 
-    fn visible_items(&self, catalog: &InventoryCatalog, filter: ItemCategory) -> Vec<ItemId> {
-        self.order
-            .iter()
-            .copied()
-            .filter(|item| self.amount(*item) > 0)
-            .filter(|item| filter == ItemCategory::All || catalog.get(*item).category == filter)
+    fn wheel_items(&self, catalog: &InventoryCatalog) -> Vec<ItemId> {
+        let mut items = self.priority_items();
+        if let Some(selected) = self.selected_item {
+            if self.amount(selected) > 0 && !items.contains(&selected) {
+                items.insert(0, selected);
+            }
+        }
+        items
+            .into_iter()
+            .filter(|item| catalog.get(*item).category != ItemCategory::All)
+            .take(INVENTORY_WHEEL_SLOTS)
             .collect()
     }
 
-    fn max_scroll_rows(&self, catalog: &InventoryCatalog, layout: &InventoryLayout) -> usize {
-        let Some(list_rect) = layout.list_rect else {
-            return 0;
-        };
-        let columns = if list_rect.w >= 400.0 { 2 } else { 1 };
-        let row_step = ITEM_CARD_H + ITEM_CARD_GAP;
-        let visible_rows = (list_rect.h / row_step).floor().max(1.0) as usize;
-        let total_items = self.visible_items(catalog, self.selected_filter).len();
-        total_items
-            .saturating_add(columns - 1)
-            .saturating_div(columns)
-            .saturating_sub(visible_rows)
+    fn priority_items(&self) -> Vec<ItemId> {
+        let mut items: Vec<ItemId> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|item| self.amount(*item) > 0)
+            .collect();
+        items.sort_by_key(|item| {
+            let order = self
+                .order
+                .iter()
+                .position(|candidate| candidate == item)
+                .unwrap_or(usize::MAX);
+            (self.amount(*item), order)
+        });
+        items
     }
 
-    fn cycle_hotbar(&mut self, delta: i32) {
-        let len = HOTBAR_SIZE as i32;
-        self.selected_hotbar = (self.selected_hotbar as i32 + delta).rem_euclid(len) as usize;
-        self.selected_item = self.hotbar[self.selected_hotbar];
-    }
-
-    fn selected_hotbar_item(&self) -> Option<ItemId> {
-        self.hotbar[self.selected_hotbar]
-    }
-
-    fn sanitize_hotbar(&mut self) {
-        for slot in &mut self.hotbar {
-            let remove = match *slot {
-                Some(item) => self.counts.get(&item).copied().unwrap_or(0) == 0,
-                None => false,
-            };
-            if remove {
-                *slot = None;
-            }
+    fn cycle_selection(&mut self, delta: i32) {
+        let items = self.priority_items();
+        if items.is_empty() {
+            self.selected_item = None;
+            return;
         }
-        if self
+        let current = self
             .selected_item
-            .is_some_and(|item| self.amount(item) == 0)
-        {
-            self.selected_item = self.selected_hotbar_item();
-        }
+            .and_then(|item| items.iter().position(|candidate| *candidate == item))
+            .unwrap_or(0);
+        let len = items.len() as i32;
+        let next = (current as i32 + delta).rem_euclid(len) as usize;
+        self.selected_item = Some(items[next]);
     }
 }
 
-fn draw_panel_shell(rect: Rect, fill: Color, stroke: Color) {
-    // Drop shadow
-    draw_rectangle(
-        rect.x + 4.0,
-        rect.y + 4.0,
-        rect.w,
-        rect.h,
-        Color::new(0.0, 0.0, 0.0, 0.4),
-    );
-    // Main fill
-    draw_rectangle(rect.x, rect.y, rect.w, rect.h, fill);
-    // Bevel/glow inner highlight
-    draw_rectangle_lines(
-        rect.x + 1.0,
-        rect.y + 1.0,
-        rect.w - 2.0,
-        rect.h - 2.0,
-        1.0,
-        Color::new(1.0, 1.0, 1.0, 0.05),
-    );
-    // Main stroke
-    draw_rectangle_lines(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        2.0,
-        stroke,
-    );
+fn resolution_ui_scale() -> f32 {
+    let width_scale = screen_width().max(1.0) / UI_BASE_WIDTH;
+    let height_scale = screen_height().max(1.0) / UI_BASE_HEIGHT;
+    width_scale.min(height_scale).clamp(0.85, 1.75)
 }
 
-fn draw_centered_label(label: &str, rect: Rect, font_size: u16, color: Color) {
-    let metrics = measure_text(label, None, font_size, 1.0);
-    let x = rect.x + (rect.w - metrics.width) * 0.5;
-    let y = rect.y + rect.h * 0.5 + metrics.offset_y.abs() * 0.25 + font_size as f32 * 0.33;
+fn draw_stack_amount(rect: Rect, amount: u32, font_size: u16, alpha: f32) {
+    let amount = format_stack_count(amount);
+    let label_metrics = measure_text(&amount, None, font_size, 1.0);
+    draw_rectangle(
+        rect.x + rect.w - label_metrics.width - 9.0,
+        rect.y + rect.h - 15.0,
+        label_metrics.width + 6.0,
+        12.0,
+        Color::new(0.04, 0.025, 0.01, alpha),
+    );
     draw_text_ex(
-        label,
-        x,
-        y,
+        &amount,
+        rect.x + rect.w - label_metrics.width - 6.0,
+        rect.y + rect.h - 5.0,
         TextParams {
             font_size,
-            color,
+            color: Color::from_hex(0xFFF0C7),
             ..Default::default()
         },
     );
 }
 
-fn draw_icon_frame(rect: Rect, accent: Color) {
-    draw_rectangle(
-        rect.x,
-        rect.y,
-        rect.w,
-        rect.h,
-        Color::new(accent.r * 0.18, accent.g * 0.18, accent.b * 0.18, 0.95),
-    );
-    draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.0, accent);
+fn hotbar_key_label(index: usize) -> &'static str {
+    match index {
+        0 => "1",
+        1 => "2",
+        2 => "3",
+        3 => "4",
+        4 => "5",
+        5 => "6",
+        6 => "7",
+        7 => "8",
+        8 => "9",
+        9 => "0",
+        _ => "",
+    }
 }
 
 fn draw_item_icon(def: &ItemDefinition, tileset: &TileSet, rect: Rect) {
@@ -915,20 +667,6 @@ fn format_stack_count(amount: u32) -> String {
     }
 }
 
-fn fit_label(label: &str, max_chars: usize) -> String {
-    let mut count = 0usize;
-    let mut out = String::new();
-    for ch in label.chars() {
-        if count >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,32 +702,27 @@ mod tests {
     }
 
     #[test]
-    fn removing_last_item_clears_hotbar_binding() {
-        let catalog = test_catalog();
+    fn removing_selected_item_selects_lowest_supply_item() {
         let mut inventory = StackInventory::new();
-        let item = catalog.iter_ids().next().unwrap();
-        inventory.add(item, 5);
-        inventory.hotbar[0] = Some(item);
-        let removed = inventory.remove(item, 5);
-        assert_eq!(removed, 5);
-        assert_eq!(inventory.amount(item), 0);
-        assert_eq!(inventory.hotbar[0], None);
+        let scarce = ItemId(0);
+        let plenty = ItemId(1);
+        inventory.add(scarce, 2);
+        inventory.add(plenty, 20);
+        inventory.selected_item = Some(scarce);
+
+        let removed = inventory.remove(scarce, 2);
+        assert_eq!(removed, 2);
+        assert_eq!(inventory.amount(scarce), 0);
+        assert_eq!(inventory.selected_item, Some(plenty));
     }
 
     #[test]
-    fn hotbar_enforces_uniqueness() {
-        let catalog = test_catalog();
+    fn priority_items_sort_by_lowest_supply() {
         let mut inventory = StackInventory::new();
-        let item = catalog.iter_ids().next().unwrap();
-        inventory.add(item, 10);
-        
-        // Bind to slot 0
-        inventory.bind_item_to_slot(item, 0);
-        assert_eq!(inventory.hotbar[0], Some(item));
-        
-        // Bind to slot 1
-        inventory.bind_item_to_slot(item, 1);
-        assert_eq!(inventory.hotbar[1], Some(item));
-        assert_eq!(inventory.hotbar[0], None, "Item should have been removed from slot 0");
+        let high = ItemId(0);
+        let low = ItemId(1);
+        inventory.add(high, 40);
+        inventory.add(low, 3);
+        assert_eq!(inventory.priority_items(), vec![low, high]);
     }
 }

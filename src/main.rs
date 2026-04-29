@@ -39,6 +39,8 @@ const LOADING_SPIN_SPEED: f32 = 3.0;
 const CHUNK_ALLOC_PER_FRAME: usize = 6;
 const CHUNK_REBUILD_PER_FRAME: usize = 8;
 const SCENE_WARM_BUDGET_S: f32 = 0.006;
+const UI_BASE_WIDTH: f32 = 960.0;
+const UI_BASE_HEIGHT: f32 = 540.0;
 
 fn window_conf() -> Conf {
     let icon = load_window_icon(&helpers::asset_path("src/assets/favicon.png"));
@@ -220,6 +222,9 @@ async fn main() {
     let heart_empty = load_texture(&helpers::asset_path("src/assets/ui/heart-empty.png"))
         .await
         .unwrap_or_else(|_| Texture2D::empty());
+    let hotbar_slot = load_texture(&helpers::asset_path("src/assets/ui/hotbar-slot.png"))
+        .await
+        .unwrap_or_else(|_| Texture2D::empty());
     let gear_icon = load_texture(&helpers::asset_path("src/assets/items/gear.png"))
         .await
         .unwrap_or_else(|_| Texture2D::empty());
@@ -228,6 +233,7 @@ async fn main() {
         .unwrap_or_else(|_| Texture2D::empty());
     heart_full.set_filter(FilterMode::Nearest);
     heart_empty.set_filter(FilterMode::Nearest);
+    hotbar_slot.set_filter(FilterMode::Nearest);
     gear_icon.set_filter(FilterMode::Nearest);
     gear_outline_icon.set_filter(FilterMode::Nearest);
 
@@ -688,7 +694,7 @@ async fn main() {
             &heart_full,
             &heart_empty,
         );
-        inventory.draw(&inventory_catalog, &tileset);
+        inventory.draw(&inventory_catalog, &tileset, &hotbar_slot);
 
         i += get_frame_time();
         if i >= 1.0 {
@@ -698,7 +704,7 @@ async fn main() {
         draw_text(
             &format!("FPS: {:.0}", fps),
             20.0,
-            40.0,
+            screen_height() - 20.0,
             30.0, // font size
             WHITE,
         );
@@ -986,10 +992,11 @@ fn draw_player_health(
         return;
     }
     let hp_per_heart = 1.0;
-    let padding = 8.0;
+    let ui_scale = resolution_ui_scale();
+    let padding = 8.0 * ui_scale;
     let base_fov = 300.0;
     let fov_scale = (base_fov / view_height.max(1.0)).clamp(0.7, 1.35);
-    let scale = fov_scale;
+    let scale = fov_scale * 0.75 * ui_scale;
 
     let heart_w = heart_full.width() * scale;
     let heart_h = heart_full.height() * scale;
@@ -1032,4 +1039,10 @@ fn draw_player_health(
             );
         }
     }
+}
+
+fn resolution_ui_scale() -> f32 {
+    let width_scale = screen_width().max(1.0) / UI_BASE_WIDTH;
+    let height_scale = screen_height().max(1.0) / UI_BASE_HEIGHT;
+    width_scale.min(height_scale).clamp(0.85, 1.75)
 }
