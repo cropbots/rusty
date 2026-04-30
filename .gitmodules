@@ -1,0 +1,3 @@
+[submodule "khoron"]
+	path = khoron
+	url = https://github.com/cropbots/khoron.git
