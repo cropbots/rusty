@@ -2,27 +2,48 @@
 
 A tiny Lua-flavored scripting experiment for Cropbot.
 
-It intentionally keeps one global scope and avoids language keywords. Supported statements are
-assignments and expression calls:
+It features dynamic typing, closures, classes, and modern shorthand operators.
+
+### Features
+
+*   **Shorthands**: Supports `++`, `--`, `+=`, `-=`, `*=`, `/=`.
+*   **Comments**: Use `//` for single-line comments.
+*   **Data Structures**: Built-in support for Lists `[1, 2, 3]` and Dictionaries `{"key": value}`.
+*   **OOP**: Simple class and instance support.
+
+### Example
 
 ```lua
-name = "crop" + "bot"
-score = 2 + 3 * 4
-print(name + " scored " + score)
+// Functions and Lists
+fn get_data() {
+    return [10, 20, 30]
+}
+
+// Classes and Objects
+class Bot {
+    fn init(name) {
+        self.name = name
+        self.stats = {"level": 1}
+    }
+    fn greet() {
+        print("Hello, I am", self.name)
+        self.stats["level"] += 1 // Shorthand supported!
+    }
+}
+
+my_bot = Bot("CropBot")
+my_bot.greet()
+print("Level is now", my_bot.stats["level"])
 ```
 
-Unlike Lua, string concatenation uses `+` instead of `..`. When both operands are numbers, `+`
-performs numeric addition. If either operand is a string, both sides are converted to text and
-concatenated.
+### Running
 
 Run a file:
-
 ```sh
 cargo run -p khoron -- script.cbl
 ```
 
 Or pipe source through stdin:
-
 ```sh
-echo 'print("hello " + "bot")' | cargo run -p khoron
+echo 'print("hello " + "world")' | cargo run -p khoron
 ```

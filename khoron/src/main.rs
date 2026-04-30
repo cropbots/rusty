@@ -30,7 +30,7 @@ fn main() {
             }
         }
         Err(err) => {
-            eprintln!("khoron: {err}");
+            eprintln!("[khoron] {err}");
             std::process::exit(1);
         }
     }
