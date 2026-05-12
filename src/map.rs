@@ -7,7 +7,7 @@ use std::path::Path;
 const EMPTY_TILE: u8 = u8::MAX;
 const CHUNK_SIZE: usize = 32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GridIndex {
     pub x: i32,
     pub y: i32,
@@ -692,9 +692,9 @@ impl TileMap {
             chunk_rows,
             chunk_pixel_size,
             chunks,
-            pending_dirty_background: vec![true; total_chunks],
-            pending_dirty_foreground: vec![true; total_chunks],
-            pending_dirty_overlay: vec![true; total_chunks],
+            pending_dirty_background: vec![false; total_chunks],
+            pending_dirty_foreground: vec![false; total_chunks],
+            pending_dirty_overlay: vec![false; total_chunks],
             chunk_alloc_cursor: 0,
             chunk_alloc_budget_per_frame: usize::MAX,
             chunk_rebuild_budget_per_frame: usize::MAX,

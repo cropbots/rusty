@@ -1,9 +1,10 @@
 use crate::helpers::{asset_path, data_path, load_wasm_manifest_files};
+use crate::map::{GridIndex, TileMap};
 use macroquad::file::load_string;
 use macroquad::prelude::*;
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -73,6 +74,10 @@ pub const DEF_FLAG_NO_MISC_COLLISION: u16 = 1 << 8;
 pub const DEF_FLAG_NO_PLAYER_COLLISION: u16 = 1 << 9;
 pub const DEF_FLAG_DYNAMIC_TARGETING: u16 = 1 << 10;
 pub const DEF_FLAG_ERRATIC: u16 = 1 << 11;
+pub const DEF_FLAG_PATHFINDING: u16 = 1 << 12;
+
+const PATHFIND_MAX_CACHED_FIELDS: usize = 96;
+const PATHFIND_MAX_VISITED_TILES: usize = 12_000;
 
 impl EntityKind {
     fn from_dir(name: &str) -> Option<Self> {
@@ -460,6 +465,7 @@ impl EntityInstance {
             }
         }
         self.behaviors = behaviors;
+        self.apply_pathfinding_velocity(map, ctx, def_flags);
 
         let mut max_speed = self.speed.max(1.0);
         for behavior in self.behaviors.iter() {
@@ -471,6 +477,11 @@ impl EntityInstance {
                 continue;
             }
             if behavior.name == "bird_ai" || behavior.name == "virabird_ai" {
+                if behavior.timer > 0.0 {
+                    let dash_speed = behavior.params.get("dash_speed").copied().unwrap_or(1200.0);
+                    max_speed = max_speed.max(dash_speed.abs());
+                    continue;
+                }
                 let seek_force = behavior.params.get("seek_force").copied().unwrap_or(1500.0);
                 let flee_force = behavior.params.get("flee_force").copied().unwrap_or(1000.0);
                 let mid_seek_force = behavior
@@ -509,7 +520,7 @@ impl EntityInstance {
             (behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target")
                 && behavior.timer > 0.0
         });
-        if phasing_dash_active {
+        if phasing_dash_active && !def.collides {
             self.pos += self.vel * dt;
         } else if def.collides || !self.dynamic_collision_scratch.is_empty() {
             let mut pos = self.pos;
@@ -568,6 +579,30 @@ impl EntityInstance {
         }
 
         self.apply_contact_damage(ctx, db);
+    }
+
+    fn apply_pathfinding_velocity(
+        &mut self,
+        map: &TileMap,
+        ctx: &mut EntityContext,
+        def_flags: u16,
+    ) {
+        if (def_flags & DEF_FLAG_PATHFINDING) == 0 || self.vel.length_squared() <= 0.0001 {
+            return;
+        }
+        let Some(target_pos) = self.current_target.as_ref().map(Target::position) else {
+            return;
+        };
+        let to_target = target_pos - self.pos;
+        if to_target.length_squared() <= 0.0001 || self.vel.dot(to_target) <= 0.0 {
+            return;
+        }
+        let Some(dir) = ctx.pathfind_direction(map, self.pos, target_pos) else {
+            return;
+        };
+        if dir.length_squared() > 0.0001 {
+            self.vel = dir.normalize() * self.vel.length();
+        }
     }
 
     pub fn draw(&self, db: &EntityDatabase) {
@@ -744,9 +779,131 @@ pub struct EntityContext {
     pub target_cache: HashMap<(u64, u8), Option<EntityTarget>>,
     pub view_height: f32,
     pub damage_events: Vec<DamageEvent>,
+    pub(crate) pathfind_fields: HashMap<GridIndex, PathfindField>,
+}
+
+pub(crate) struct PathfindField {
+    distances: HashMap<GridIndex, u16>,
+}
+
+impl PathfindField {
+    fn build(map: &TileMap, goal: GridIndex) -> Self {
+        let mut distances = HashMap::with_capacity(512);
+        let mut queue = VecDeque::new();
+        distances.insert(goal, 0);
+        queue.push_back(goal);
+
+        while let Some(current) = queue.pop_front() {
+            if distances.len() >= PATHFIND_MAX_VISITED_TILES {
+                break;
+            }
+            let next_dist = distances
+                .get(&current)
+                .copied()
+                .unwrap_or(u16::MAX)
+                .saturating_add(1);
+            for next in path_neighbors(current) {
+                if distances.contains_key(&next) || !is_pathable_grid(map, next) {
+                    continue;
+                }
+                distances.insert(next, next_dist);
+                queue.push_back(next);
+            }
+        }
+
+        Self { distances }
+    }
+
+    fn direction(&self, map: &TileMap, from_grid: GridIndex, from: Vec2) -> Option<Vec2> {
+        let current_dist = self.distances.get(&from_grid).copied().unwrap_or(u16::MAX);
+        let mut best_grid = None;
+        let mut best_dist = current_dist;
+        for next in path_neighbors(from_grid) {
+            if !is_pathable_grid(map, next) {
+                continue;
+            }
+            let Some(dist) = self.distances.get(&next).copied() else {
+                continue;
+            };
+            if dist < best_dist {
+                best_dist = dist;
+                best_grid = Some(next);
+            }
+        }
+
+        let next = best_grid?;
+        Some(map.grid_to_world(next) + vec2(map.tile_size() * 0.5, map.tile_size() * 0.5) - from)
+    }
+}
+
+fn nearest_pathable_grid(map: &TileMap, grid: GridIndex) -> Option<GridIndex> {
+    if is_pathable_grid(map, grid) {
+        return Some(grid);
+    }
+    for radius in 1..=6 {
+        for y in grid.y - radius..=grid.y + radius {
+            for x in grid.x - radius..=grid.x + radius {
+                if (x - grid.x).abs().max((y - grid.y).abs()) != radius {
+                    continue;
+                }
+                let candidate = GridIndex { x, y };
+                if is_pathable_grid(map, candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn path_neighbors(grid: GridIndex) -> [GridIndex; 4] {
+    [
+        GridIndex {
+            x: grid.x,
+            y: grid.y - 1,
+        },
+        GridIndex {
+            x: grid.x + 1,
+            y: grid.y,
+        },
+        GridIndex {
+            x: grid.x,
+            y: grid.y + 1,
+        },
+        GridIndex {
+            x: grid.x - 1,
+            y: grid.y,
+        },
+    ]
+}
+
+fn is_pathable_grid(map: &TileMap, grid: GridIndex) -> bool {
+    if grid.x < 0 || grid.y < 0 {
+        return false;
+    }
+    let (x, y) = (grid.x as usize, grid.y as usize);
+    x < map.width() && y < map.height() && !map.is_solid(x, y)
 }
 
 impl EntityContext {
+    pub fn pathfind_direction(&mut self, map: &TileMap, from: Vec2, goal: Vec2) -> Option<Vec2> {
+        let from_grid = map.grid_index(from)?;
+        let goal_grid = nearest_pathable_grid(map, map.grid_index(goal)?)?;
+        if from_grid == goal_grid {
+            return Some(goal - from);
+        }
+        if !self.pathfind_fields.contains_key(&goal_grid) {
+            if self.pathfind_fields.len() >= PATHFIND_MAX_CACHED_FIELDS {
+                self.pathfind_fields.clear();
+            }
+            self.pathfind_fields
+                .insert(goal_grid, PathfindField::build(map, goal_grid));
+        }
+        self.pathfind_fields
+            .get(&goal_grid)?
+            .direction(map, from_grid, from)
+    }
+
     fn resolve_target(
         &mut self,
         db: &EntityDatabase,
@@ -1463,6 +1620,9 @@ fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef])
     }
     if trait_indices_have_flag(trait_indices, traits, "erratic") {
         flags |= DEF_FLAG_ERRATIC;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "pathfinding") {
+        flags |= DEF_FLAG_PATHFINDING;
     }
 
     flags

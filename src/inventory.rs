@@ -343,7 +343,8 @@ impl StackInventory {
         );
         let outer_ring_radius = WHEEL_RADIUS;
         let outer_ring_thickness = WHEEL_RING_THICKNESS;
-        let outer_ring_center_radius = outer_ring_radius - outer_ring_thickness + WHEEL_RING_OUTLINE;
+        let outer_ring_center_radius =
+            outer_ring_radius - outer_ring_thickness + WHEEL_RING_OUTLINE;
         let center_circle_radius = WHEEL_CENTER_SLOT_SIZE * 0.72;
 
         draw_circle(

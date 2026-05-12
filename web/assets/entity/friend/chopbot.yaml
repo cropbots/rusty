@@ -3,7 +3,7 @@ traits:
   - dynamic_targeting
   - target_nearest_enemy
   - no_player_collision
-  - no_map_collision
+  - pathfinding
   - erratic
 stats:
   hp: 5 

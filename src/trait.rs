@@ -24,6 +24,7 @@ pub fn append_builtin_traits(traits: &mut Vec<TraitDef>) {
     push_trait("target_nearest_misc", &["target_nearest_misc"]);
     push_trait("dynamic_targeting", &["dynamic_targeting"]);
     push_trait("erratic", &["erratic"]);
+    push_trait("pathfinding", &["pathfinding"]);
     push_trait("no_map_collision", &["no_map_collision"]);
     push_trait("no_entity_collision", &["no_entity_collision"]);
     push_trait("no_enemy_collision", &["no_enemy_collision"]);

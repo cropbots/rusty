@@ -1,7 +1,7 @@
 id: virat
 traits:
   - target_player
-  - no_map_collision
+  - pathfinding
 stats:
   hp: 5
   speed: 200
