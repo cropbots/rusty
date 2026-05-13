@@ -3,8 +3,8 @@
   "tile_width": 16,
   "tile_height": 16,
   "columns": 16,
-  "rows": 14,
-  "tile_count": 223,
+  "rows": 15,
+  "tile_count": 227,
   "tiles": [
     {
       "id": 0,
@@ -1564,6 +1564,34 @@
       "id": 222,
       "x": 224,
       "y": 208,
+      "width": 16,
+      "height": 16
+    },
+    {
+      "id": 223,
+      "x": 240,
+      "y": 208,
+      "width": 16,
+      "height": 16
+    },
+    {
+      "id": 224,
+      "x": 0,
+      "y": 224,
+      "width": 16,
+      "height": 16
+    },
+    {
+      "id": 225,
+      "x": 16,
+      "y": 224,
+      "width": 16,
+      "height": 16
+    },
+    {
+      "id": 226,
+      "x": 32,
+      "y": 224,
       "width": 16,
       "height": 16
     }
