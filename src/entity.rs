@@ -4,7 +4,8 @@ use macroquad::file::load_string;
 use macroquad::prelude::*;
 use serde::Deserialize;
 use serde_yaml::Value as YamlValue;
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Ordering as CmpOrdering;
+use std::collections::{BinaryHeap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -75,9 +76,10 @@ pub const DEF_FLAG_NO_PLAYER_COLLISION: u16 = 1 << 9;
 pub const DEF_FLAG_DYNAMIC_TARGETING: u16 = 1 << 10;
 pub const DEF_FLAG_ERRATIC: u16 = 1 << 11;
 pub const DEF_FLAG_PATHFINDING: u16 = 1 << 12;
+pub const DEF_FLAG_PHASE_DUNGEON_WALLS: u16 = 1 << 13;
 
-const PATHFIND_MAX_CACHED_FIELDS: usize = 96;
-const PATHFIND_MAX_VISITED_TILES: usize = 12_000;
+const PATHFIND_MAX_VISITED_TILES: usize = 6_000;
+const PATHFIND_REPLAN_INTERVAL: f32 = 0.55;
 
 impl EntityKind {
     fn from_dir(name: &str) -> Option<Self> {
@@ -361,6 +363,18 @@ pub struct EntityInstance {
     pub dealt_damage_last_tick: bool,
     dealt_damage_pending: bool,
     dash_cooldown_memory: HashMap<String, f32>,
+    path_follow: Option<PathFollowState>,
+}
+
+#[derive(Clone)]
+struct PathFollowState {
+    goal_grid: GridIndex,
+    room_goal: Option<usize>,
+    room_path: Vec<usize>,
+    room_next_idx: usize,
+    path: Vec<GridIndex>,
+    next_idx: usize,
+    repath_timer: f32,
 }
 
 impl EntityInstance {
@@ -465,7 +479,7 @@ impl EntityInstance {
             }
         }
         self.behaviors = behaviors;
-        self.apply_pathfinding_velocity(map, ctx, def_flags);
+        self.apply_pathfinding_velocity(map, ctx, def_flags, dt);
 
         let mut max_speed = self.speed.max(1.0);
         for behavior in self.behaviors.iter() {
@@ -520,19 +534,37 @@ impl EntityInstance {
             (behavior.name == "dash_at_target" || behavior.name == "curve_dash_at_target")
                 && behavior.timer > 0.0
         });
-        if phasing_dash_active && !def.collides {
+        let can_phase_dungeon_walls = (def.flags & DEF_FLAG_PHASE_DUNGEON_WALLS) != 0
+            || self.behaviors.iter().any(|behavior| {
+                (behavior.name == "bird_ai" || behavior.name == "virabird_ai")
+                    && behavior.timer > 0.0
+            });
+        let enforce_dungeon_collision_while_dashing =
+            phasing_dash_active && !def.collides && !can_phase_dungeon_walls;
+        if phasing_dash_active && !def.collides && can_phase_dungeon_walls {
             self.pos += self.vel * dt;
-        } else if def.collides || !self.dynamic_collision_scratch.is_empty() {
+        } else if def.collides
+            || enforce_dungeon_collision_while_dashing
+            || !self.dynamic_collision_scratch.is_empty()
+        {
             let mut pos = self.pos;
             let mut vel = self.vel;
+            let include_normal_map = !(phasing_dash_active && !def.collides);
+            let include_dungeon_walls = !phasing_dash_active || !can_phase_dungeon_walls;
 
             pos.x += vel.x * dt;
             self.collision_scratch.clear();
-            if def.collides {
+            if def.collides || enforce_dungeon_collision_while_dashing {
                 let probe = hitbox_center_world(pos, def.hitbox);
                 if let Some(grid) = map.grid_index(probe) {
                     let radius = collision_radius(map, vel, dt);
-                    map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                    map.fill_hitboxes_around_grid_filtered(
+                        grid,
+                        radius,
+                        &mut self.collision_scratch,
+                        include_normal_map,
+                        include_dungeon_walls,
+                    );
                 }
             }
             self.collision_scratch
@@ -551,11 +583,17 @@ impl EntityInstance {
 
             pos.y += vel.y * dt;
             self.collision_scratch.clear();
-            if def.collides {
+            if def.collides || enforce_dungeon_collision_while_dashing {
                 let probe = hitbox_center_world(pos, def.hitbox);
                 if let Some(grid) = map.grid_index(probe) {
                     let radius = collision_radius(map, vel, dt);
-                    map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                    map.fill_hitboxes_around_grid_filtered(
+                        grid,
+                        radius,
+                        &mut self.collision_scratch,
+                        include_normal_map,
+                        include_dungeon_walls,
+                    );
                 }
             }
             self.collision_scratch
@@ -586,8 +624,35 @@ impl EntityInstance {
         map: &TileMap,
         ctx: &mut EntityContext,
         def_flags: u16,
+        dt: f32,
     ) {
-        if (def_flags & DEF_FLAG_PATHFINDING) == 0 || self.vel.length_squared() <= 0.0001 {
+        let has_basic_path_behavior = self.behaviors.iter().any(|behavior| {
+            matches!(
+                behavior.name.as_str(),
+                "wander"
+                    | "seek"
+                    | "seek_player"
+                    | "seek_nearest_entity"
+                    | "seek_nearest_enemy"
+                    | "seek_nearest_friend"
+                    | "seek_nearest_misc"
+                    | "watch"
+                    | "watch_player"
+                    | "watch_nearest_entity"
+                    | "watch_nearest_enemy"
+                    | "watch_nearest_friend"
+                    | "watch_nearest_misc"
+                    | "flee"
+                    | "flee_player"
+                    | "flee_nearest_entity"
+                    | "flee_nearest_enemy"
+                    | "flee_nearest_friend"
+                    | "flee_nearest_misc"
+            )
+        });
+        if ((def_flags & DEF_FLAG_PATHFINDING) == 0 && !has_basic_path_behavior)
+            || self.vel.length_squared() <= 0.0001
+        {
             return;
         }
         let Some(target_pos) = self.current_target.as_ref().map(Target::position) else {
@@ -597,7 +662,7 @@ impl EntityInstance {
         if to_target.length_squared() <= 0.0001 || self.vel.dot(to_target) <= 0.0 {
             return;
         }
-        let Some(dir) = ctx.pathfind_direction(map, self.pos, target_pos) else {
+        let Some(dir) = ctx.pathfind_direction(map, self, target_pos, dt) else {
             return;
         };
         if dir.length_squared() > 0.0001 {
@@ -779,60 +844,27 @@ pub struct EntityContext {
     pub target_cache: HashMap<(u64, u8), Option<EntityTarget>>,
     pub view_height: f32,
     pub damage_events: Vec<DamageEvent>,
-    pub(crate) pathfind_fields: HashMap<GridIndex, PathfindField>,
 }
 
-pub(crate) struct PathfindField {
-    distances: HashMap<GridIndex, u16>,
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct AStarNode {
+    f_score: i32,
+    g_score: i32,
+    grid: GridIndex,
 }
 
-impl PathfindField {
-    fn build(map: &TileMap, goal: GridIndex) -> Self {
-        let mut distances = HashMap::with_capacity(512);
-        let mut queue = VecDeque::new();
-        distances.insert(goal, 0);
-        queue.push_back(goal);
-
-        while let Some(current) = queue.pop_front() {
-            if distances.len() >= PATHFIND_MAX_VISITED_TILES {
-                break;
-            }
-            let next_dist = distances
-                .get(&current)
-                .copied()
-                .unwrap_or(u16::MAX)
-                .saturating_add(1);
-            for next in path_neighbors(current) {
-                if distances.contains_key(&next) || !is_pathable_grid(map, next) {
-                    continue;
-                }
-                distances.insert(next, next_dist);
-                queue.push_back(next);
-            }
-        }
-
-        Self { distances }
+impl Ord for AStarNode {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        other
+            .f_score
+            .cmp(&self.f_score)
+            .then_with(|| other.g_score.cmp(&self.g_score))
     }
+}
 
-    fn direction(&self, map: &TileMap, from_grid: GridIndex, from: Vec2) -> Option<Vec2> {
-        let current_dist = self.distances.get(&from_grid).copied().unwrap_or(u16::MAX);
-        let mut best_grid = None;
-        let mut best_dist = current_dist;
-        for next in path_neighbors(from_grid) {
-            if !is_pathable_grid(map, next) {
-                continue;
-            }
-            let Some(dist) = self.distances.get(&next).copied() else {
-                continue;
-            };
-            if dist < best_dist {
-                best_dist = dist;
-                best_grid = Some(next);
-            }
-        }
-
-        let next = best_grid?;
-        Some(map.grid_to_world(next) + vec2(map.tile_size() * 0.5, map.tile_size() * 0.5) - from)
+impl PartialOrd for AStarNode {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -885,23 +917,225 @@ fn is_pathable_grid(map: &TileMap, grid: GridIndex) -> bool {
     x < map.width() && y < map.height() && !map.is_solid(x, y)
 }
 
+fn heuristic_cost(a: GridIndex, b: GridIndex) -> i32 {
+    (a.x - b.x).abs() + (a.y - b.y).abs()
+}
+
+fn heuristic_room_cost(a: usize, b: usize, rooms: &[crate::map::HpaRoom]) -> i32 {
+    let ac = rooms[a].center;
+    let bc = rooms[b].center;
+    (ac.x - bc.x).abs() + (ac.y - bc.y).abs()
+}
+
+fn astar_path(map: &TileMap, start: GridIndex, goal: GridIndex) -> Option<Vec<GridIndex>> {
+    let mut open = BinaryHeap::new();
+    let mut came_from: HashMap<GridIndex, GridIndex> = HashMap::new();
+    let mut g_score: HashMap<GridIndex, i32> = HashMap::new();
+    g_score.insert(start, 0);
+    open.push(AStarNode {
+        f_score: heuristic_cost(start, goal),
+        g_score: 0,
+        grid: start,
+    });
+
+    let mut visited = 0usize;
+    while let Some(current) = open.pop() {
+        visited += 1;
+        if visited > PATHFIND_MAX_VISITED_TILES {
+            break;
+        }
+        if current.grid == goal {
+            let mut path = Vec::new();
+            let mut node = goal;
+            while node != start {
+                path.push(node);
+                node = *came_from.get(&node)?;
+            }
+            path.reverse();
+            return Some(path);
+        }
+        let current_g = *g_score.get(&current.grid).unwrap_or(&i32::MAX);
+        for next in path_neighbors(current.grid) {
+            if !is_pathable_grid(map, next) {
+                continue;
+            }
+            let tentative = current_g.saturating_add(1);
+            if tentative < *g_score.get(&next).unwrap_or(&i32::MAX) {
+                came_from.insert(next, current.grid);
+                g_score.insert(next, tentative);
+                open.push(AStarNode {
+                    f_score: tentative.saturating_add(heuristic_cost(next, goal)),
+                    g_score: tentative,
+                    grid: next,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn astar_room_path(map: &TileMap, start_room: usize, goal_room: usize) -> Option<Vec<usize>> {
+    let rooms = map.hpa_rooms();
+    if start_room >= rooms.len() || goal_room >= rooms.len() {
+        return None;
+    }
+    let mut open = BinaryHeap::new();
+    let mut came_from: HashMap<usize, usize> = HashMap::new();
+    let mut g_score: HashMap<usize, i32> = HashMap::new();
+    g_score.insert(start_room, 0);
+    open.push(AStarNode {
+        f_score: heuristic_room_cost(start_room, goal_room, rooms),
+        g_score: 0,
+        grid: GridIndex {
+            x: start_room as i32,
+            y: 0,
+        },
+    });
+
+    while let Some(current) = open.pop() {
+        let room_idx = current.grid.x as usize;
+        if room_idx == goal_room {
+            let mut path = Vec::new();
+            let mut node = goal_room;
+            while node != start_room {
+                path.push(node);
+                node = *came_from.get(&node)?;
+            }
+            path.reverse();
+            return Some(path);
+        }
+        let current_g = *g_score.get(&room_idx).unwrap_or(&i32::MAX);
+        for &next in &rooms[room_idx].neighbors {
+            let tentative = current_g.saturating_add(1);
+            if tentative < *g_score.get(&next).unwrap_or(&i32::MAX) {
+                came_from.insert(next, room_idx);
+                g_score.insert(next, tentative);
+                open.push(AStarNode {
+                    f_score: tentative.saturating_add(heuristic_room_cost(next, goal_room, rooms)),
+                    g_score: tentative,
+                    grid: GridIndex {
+                        x: next as i32,
+                        y: 0,
+                    },
+                });
+            }
+        }
+    }
+    None
+}
+
+fn line_pathable(map: &TileMap, from: Vec2, to: Vec2) -> bool {
+    let delta = to - from;
+    let distance = delta.length();
+    if distance <= 0.001 {
+        return true;
+    }
+    let step = (map.tile_size() * 0.45).max(1.0);
+    let samples = (distance / step).ceil().clamp(1.0, 128.0) as i32;
+    for i in 0..=samples {
+        let t = i as f32 / samples as f32;
+        let p = from + delta * t;
+        let Some(g) = map.grid_index(p) else {
+            return false;
+        };
+        if !is_pathable_grid(map, g) {
+            return false;
+        }
+    }
+    true
+}
+
 impl EntityContext {
-    pub fn pathfind_direction(&mut self, map: &TileMap, from: Vec2, goal: Vec2) -> Option<Vec2> {
+    pub fn pathfind_direction(
+        &mut self,
+        map: &TileMap,
+        entity: &mut EntityInstance,
+        goal: Vec2,
+        dt: f32,
+    ) -> Option<Vec2> {
+        let from = entity.pos;
         let from_grid = map.grid_index(from)?;
         let goal_grid = nearest_pathable_grid(map, map.grid_index(goal)?)?;
         if from_grid == goal_grid {
+            entity.path_follow = None;
             return Some(goal - from);
         }
-        if !self.pathfind_fields.contains_key(&goal_grid) {
-            if self.pathfind_fields.len() >= PATHFIND_MAX_CACHED_FIELDS {
-                self.pathfind_fields.clear();
-            }
-            self.pathfind_fields
-                .insert(goal_grid, PathfindField::build(map, goal_grid));
+        if line_pathable(map, from, goal) {
+            entity.path_follow = None;
+            return Some(goal - from);
         }
-        self.pathfind_fields
-            .get(&goal_grid)?
-            .direction(map, from_grid, from)
+        let mut needs_replan = false;
+        if let Some(follow) = entity.path_follow.as_mut() {
+            follow.repath_timer = (follow.repath_timer - dt).max(0.0);
+            if follow.goal_grid != goal_grid
+                || follow.path.is_empty()
+                || follow.next_idx >= follow.path.len()
+            {
+                needs_replan = true;
+            } else if follow.repath_timer <= 0.0 {
+                needs_replan = true;
+            }
+        } else {
+            needs_replan = true;
+        }
+        if needs_replan {
+            let mut room_goal = None;
+            let mut room_path = Vec::new();
+            let mut local_goal = goal_grid;
+            if let (Some(from_room), Some(goal_room)) =
+                (map.hpa_room_index(from_grid), map.hpa_room_index(goal_grid))
+            {
+                room_goal = Some(goal_room);
+                if from_room != goal_room {
+                    room_path = astar_room_path(map, from_room, goal_room).unwrap_or_default();
+                    if let Some(&next_room) = room_path.first() {
+                        local_goal = map.hpa_rooms()[next_room].center;
+                    }
+                }
+            }
+            let path = astar_path(map, from_grid, local_goal)?;
+            entity.path_follow = Some(PathFollowState {
+                goal_grid,
+                room_goal,
+                room_path,
+                room_next_idx: 0,
+                path,
+                next_idx: 0,
+                repath_timer: PATHFIND_REPLAN_INTERVAL,
+            });
+        }
+
+        let follow = entity.path_follow.as_mut()?;
+        while follow.next_idx < follow.path.len() {
+            let next = follow.path[follow.next_idx];
+            if !is_pathable_grid(map, next) {
+                follow.repath_timer = 0.0;
+                return None;
+            }
+            let next_center =
+                map.grid_to_world(next) + vec2(map.tile_size() * 0.5, map.tile_size() * 0.5);
+            if next_center.distance_squared(from) <= (map.tile_size() * 0.35).powi(2) {
+                follow.next_idx += 1;
+                continue;
+            }
+            return Some(next_center - from);
+        }
+        if follow.room_next_idx < follow.room_path.len() {
+            let next_room = follow.room_path[follow.room_next_idx];
+            let next_room_center = map.hpa_rooms()[next_room].center;
+            if map.hpa_room_index(from_grid) == Some(next_room) {
+                follow.room_next_idx += 1;
+            } else {
+                follow.path = astar_path(map, from_grid, next_room_center).unwrap_or_default();
+                follow.next_idx = 0;
+                follow.repath_timer = 0.2;
+            }
+        } else if follow.room_goal.is_some() {
+            follow.path = astar_path(map, from_grid, goal_grid).unwrap_or_default();
+            follow.next_idx = 0;
+            follow.repath_timer = 0.2;
+        }
+        None
     }
 
     fn resolve_target(
@@ -1262,6 +1496,7 @@ impl EntityDatabase {
             dealt_damage_last_tick: false,
             dealt_damage_pending: false,
             dash_cooldown_memory: HashMap::new(),
+            path_follow: None,
         })
     }
 }
@@ -1623,6 +1858,9 @@ fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef])
     }
     if trait_indices_have_flag(trait_indices, traits, "pathfinding") {
         flags |= DEF_FLAG_PATHFINDING;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "phase_dungeon_walls") {
+        flags |= DEF_FLAG_PHASE_DUNGEON_WALLS;
     }
 
     flags

@@ -31,6 +31,7 @@ pub fn append_builtin_traits(traits: &mut Vec<TraitDef>) {
     push_trait("no_friend_collision", &["no_friend_collision"]);
     push_trait("no_misc_collision", &["no_misc_collision"]);
     push_trait("no_player_collision", &["no_player_collision"]);
+    push_trait("phase_dungeon_walls", &["phase_dungeon_walls"]);
 }
 
 fn cooldown_with_erratic(entity: &EntityInstance, base: f32) -> f32 {

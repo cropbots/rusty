@@ -1,6 +1,5 @@
 use image::imageops::FilterType;
 use macroquad::prelude::*;
-use egui_macroquad::egui;
 use miniquad::conf::{Icon, Platform};
 use std::collections::HashMap;
 use std::future::poll_fn;
@@ -11,12 +10,16 @@ mod helpers;
 mod interact;
 mod inventory;
 mod map;
+mod notebook;
 mod particle;
 mod player;
 mod scene;
 mod sound;
 mod tilemap;
 mod r#trait;
+
+use helpers::resolution_ui_scale;
+use notebook::ProgrammingNotebook;
 
 use entity::{
     DamageEvent, Entity, EntityContext, EntityDatabase, MovementRegistry, PlayerTarget, Target,
@@ -40,43 +43,6 @@ const LOADING_SPIN_SPEED: f32 = 3.0;
 const CHUNK_ALLOC_PER_FRAME: usize = 6;
 const CHUNK_REBUILD_PER_FRAME: usize = 8;
 const SCENE_WARM_BUDGET_S: f32 = 0.006;
-const UI_BASE_WIDTH: f32 = 960.0;
-const UI_BASE_HEIGHT: f32 = 540.0;
-const NOTEBOOK_TOGGLE_KEY: KeyCode = KeyCode::N;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NotebookTab {
-    Programming,
-    PuzzleProgramming,
-    Almanac,
-}
-
-struct ProgrammingNotebook {
-    open: bool,
-    tab: NotebookTab,
-    show_robot_viz: bool,
-    program_text: String,
-    puzzle_text: String,
-    console_text: String,
-    ui_captures_pointer: bool,
-}
-
-impl ProgrammingNotebook {
-    fn new() -> Self {
-        Self {
-            open: false,
-            tab: NotebookTab::Programming,
-            show_robot_viz: true,
-            program_text:
-                "function patrol()\n  move.forward(3)\n  turn.left()\n  print(\"ready\")\nend"
-                    .to_string(),
-            puzzle_text: "function solve()\n  move.forward(2)\n  scan()\n  turn.right()\nend"
-                .to_string(),
-            console_text: "> ready\n> waiting for block execution\n> no runtime errors".to_string(),
-            ui_captures_pointer: false,
-        }
-    }
-}
 
 fn window_conf() -> Conf {
     let icon = load_window_icon(&helpers::asset_path("src/assets/favicon.png"));
@@ -261,20 +227,23 @@ async fn main() {
     let hotbar_slot = load_texture(&helpers::asset_path("src/assets/ui/hotbar-slot.png"))
         .await
         .unwrap_or_else(|_| Texture2D::empty());
-    let gear_icon = load_texture(&helpers::asset_path("src/assets/items/gear.png"))
-        .await
-        .unwrap_or_else(|_| Texture2D::empty());
-    let gear_outline_icon = load_texture(&helpers::asset_path("src/assets/items/gear-o.png"))
-        .await
-        .unwrap_or_else(|_| Texture2D::empty());
     heart_full.set_filter(FilterMode::Nearest);
     heart_empty.set_filter(FilterMode::Nearest);
     hotbar_slot.set_filter(FilterMode::Nearest);
-    gear_icon.set_filter(FilterMode::Nearest);
-    gear_outline_icon.set_filter(FilterMode::Nearest);
-
-    let inventory_catalog = InventoryCatalog::demo(tileset.count(), gear_icon, gear_outline_icon);
+    let inventory_catalog = await_with_loading(
+        InventoryCatalog::load_from("src/items"),
+        &loading,
+        "Loading items",
+        0.74,
+        &mut loading_spin,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("item load failed: {err}");
+        InventoryCatalog::new()
+    });
     let mut inventory = StackInventory::seed_demo(&inventory_catalog);
+    let chopbot_summon_item = inventory_catalog.id_by_key("chopbot_summon");
 
     // Camera
     let mut camera = Camera2D {
@@ -369,7 +338,6 @@ async fn main() {
     let mut footstep_timer = 0.0f32;
     let mut damage_events: Vec<DamageEvent> = Vec::new();
     let mut entity_target_cache: HashMap<(u64, u8), Option<entity::EntityTarget>> = HashMap::new();
-    let mut pathfind_fields = HashMap::new();
     let mut player_dead = false;
     let interact_registry = InteractRegistry::new();
     let mut notebook = ProgrammingNotebook::new();
@@ -408,7 +376,6 @@ async fn main() {
             player.set_position(scene::expedition_spawn_point());
             camera.target = player.position();
             entity_target_cache.clear();
-            pathfind_fields.clear();
             damage_events.clear();
             current_scene = SceneKind::Expedition;
             loading_spin += LOADING_SPIN_SPEED * get_frame_time();
@@ -430,7 +397,6 @@ async fn main() {
             player.set_position(scene::farm_spawn_point(&maps));
             camera.target = player.position();
             entity_target_cache.clear();
-            pathfind_fields.clear();
             damage_events.clear();
             current_scene = SceneKind::Farm;
             warm_scene_chunks_loading(
@@ -496,6 +462,37 @@ async fn main() {
             })
             .cloned();
 
+        let mut summon_preview: Option<(Rect, bool)> = None;
+        if current_scene == SceneKind::Expedition
+            && inventory.selected_item() == chopbot_summon_item
+            && !notebook.open
+        {
+            if let Some(grid) = maps.grid_index(mouse_world) {
+                let in_bounds = grid.x >= 0
+                    && grid.y >= 0
+                    && (grid.x as usize) < maps.width()
+                    && (grid.y as usize) < maps.height();
+                if in_bounds {
+                    let gx = grid.x as usize;
+                    let gy = grid.y as usize;
+                    let tile_rect = maps.tile_bounds(gx, gy);
+                    let floor_ok = maps.tile_at(map::LayerKind::Background, gx, gy)
+                        == scene::EXPEDITION_FLOOR_TILE;
+                    let solid_block = maps.is_solid(gx, gy);
+                    let center = vec2(
+                        tile_rect.x + tile_rect.w * 0.5,
+                        tile_rect.y + tile_rect.h * 0.5,
+                    );
+                    let occupied_by_entity = entities.iter().any(|ent| {
+                        let hb = ent.hitbox(&db);
+                        hb.contains(center) || hb.overlaps(&tile_rect)
+                    });
+                    let valid = floor_ok && !solid_block && !occupied_by_entity;
+                    summon_preview = Some((tile_rect, valid));
+                }
+            }
+        }
+
         if is_mouse_button_pressed(MouseButton::Left) && !ui_captures_pointer {
             if let Some(interactor) = hovered_interactor.as_ref() {
                 let mut ctx = InteractContext {
@@ -505,6 +502,16 @@ async fn main() {
                     map: &mut maps,
                 };
                 interact_registry.execute(&interactor.on_interact, &mut ctx);
+            }
+        }
+        if is_mouse_button_pressed(MouseButton::Right) && !ui_captures_pointer {
+            if let Some((rect, valid)) = summon_preview {
+                if valid && inventory.consume_selected_one().is_some() {
+                    let spawn_pos = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+                    if let Some(entity) = Entity::spawn(&db, "chopbot", spawn_pos, &registry) {
+                        entities.push(entity);
+                    }
+                }
             }
         }
 
@@ -536,7 +543,6 @@ async fn main() {
             target_cache: std::mem::take(&mut entity_target_cache),
             view_height: CAMERA_FOV,
             damage_events: Vec::new(),
-            pathfind_fields: std::mem::take(&mut pathfind_fields),
         };
 
         let mut ent_idx = 0usize;
@@ -548,7 +554,6 @@ async fn main() {
         resolve_entity_overlaps(&mut entities, &db, &maps);
         damage_events.extend(ctx.damage_events.drain(..));
         entity_target_cache = std::mem::take(&mut ctx.target_cache);
-        pathfind_fields = std::mem::take(&mut ctx.pathfind_fields);
 
         for ent in entities.iter_mut() {
             let def = &db.entities[ent.instance.def];
@@ -718,6 +723,21 @@ async fn main() {
             );
         }
 
+        if let Some((rect, valid)) = summon_preview {
+            let color = if valid {
+                Color::new(1.0, 0.95, 0.2, 0.30)
+            } else {
+                Color::new(1.0, 0.2, 0.2, 0.30)
+            };
+            let line = if valid {
+                Color::new(1.0, 0.95, 0.2, 0.95)
+            } else {
+                Color::new(1.0, 0.3, 0.3, 0.95)
+            };
+            draw_rectangle(rect.x, rect.y, rect.w, rect.h, color);
+            draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 1.5, line);
+        }
+
         set_default_camera();
         if use_render_target {
             draw_texture_ex(
@@ -759,217 +779,6 @@ async fn main() {
 
         next_frame().await;
     }
-}
-
-impl ProgrammingNotebook {
-    fn bounds(&self) -> Rect {
-        let scale = resolution_ui_scale();
-        let margin = 14.0 * scale;
-        let w = (screen_width() - margin * 2.0).min(920.0 * scale).max(320.0);
-        let h = (screen_height() - margin * 2.0).min(500.0 * scale).max(260.0);
-        Rect::new((screen_width() - w) * 0.5, margin, w, h)
-    }
-
-    fn captures_pointer(&self) -> bool {
-        self.ui_captures_pointer
-    }
-
-    fn handle_input(&mut self) {
-        if !self.open && is_key_pressed(NOTEBOOK_TOGGLE_KEY) {
-            self.open = true;
-        }
-    }
-
-    fn draw(&mut self) {
-        if !self.open {
-            let margin = 16.0 * resolution_ui_scale();
-            egui_macroquad::ui(|ctx| {
-                style_notebook_egui(ctx);
-                egui::Area::new(egui::Id::new("notebook_open_button"))
-                    .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-margin, -margin))
-                    .show(ctx, |ui| {
-                        if ui
-                            .add_sized([150.0, 38.0], egui::Button::new("Notebook  [N]"))
-                            .clicked()
-                        {
-                            self.open = true;
-                        }
-                    });
-                self.ui_captures_pointer = ctx.is_pointer_over_area() || ctx.wants_pointer_input();
-            });
-            return;
-        }
-
-        let rect = self.bounds();
-        egui_macroquad::ui(|ctx| {
-            style_notebook_egui(ctx);
-            egui::Window::new("Notebook")
-                .title_bar(false)
-                .fixed_pos(egui::pos2(rect.x, rect.y))
-                .fixed_size(egui::vec2(rect.w, rect.h))
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        tab_button(ui, &mut self.tab, NotebookTab::Programming, "Programming");
-                        tab_button(
-                            ui,
-                            &mut self.tab,
-                            NotebookTab::PuzzleProgramming,
-                            "Puzzle Programming",
-                        );
-                        tab_button(ui, &mut self.tab, NotebookTab::Almanac, "Almanac");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Close").clicked() {
-                                self.open = false;
-                            }
-                        });
-                    });
-                    ui.separator();
-
-                    match self.tab {
-                        NotebookTab::Programming => self.draw_programming_ui(ui, false),
-                        NotebookTab::PuzzleProgramming => self.draw_programming_ui(ui, true),
-                        NotebookTab::Almanac => self.draw_almanac_ui(ui),
-                    }
-                });
-            self.ui_captures_pointer = ctx.is_pointer_over_area() || ctx.wants_pointer_input();
-        });
-    }
-
-    fn draw_programming_ui(&mut self, ui: &mut egui::Ui, puzzle: bool) {
-        ui.label(egui::RichText::new("Programming Space").strong());
-        if puzzle {
-            ui.colored_label(egui::Color32::from_rgb(250, 203, 128), "No puzzle active");
-        }
-        let code = if puzzle {
-            &mut self.puzzle_text
-        } else {
-            &mut self.program_text
-        };
-
-        ui.columns(2, |cols| {
-            cols[0].add_sized(
-                [cols[0].available_width(), (cols[0].available_height() - 8.0).max(170.0)],
-                egui::TextEdit::multiline(code)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY),
-            );
-
-            cols[1].vertical(|ui| {
-                if ui
-                    .button(if self.show_robot_viz {
-                        "Hide robot visualization"
-                    } else {
-                        "Show robot visualization"
-                    })
-                    .clicked()
-                {
-                    self.show_robot_viz = !self.show_robot_viz;
-                }
-
-                ui.label(egui::RichText::new("Console").strong());
-                let console_h = if self.show_robot_viz { 140.0 } else { 230.0 };
-                ui.add_sized(
-                    [ui.available_width(), console_h],
-                    egui::TextEdit::multiline(&mut self.console_text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY),
-                );
-
-                if self.show_robot_viz {
-                    ui.label(egui::RichText::new("Robot Movement Visualization").strong());
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.label("[ ] [ ] [ ] [ ] [ ]");
-                        ui.label("[ ] [ ] [^] [ ] [ ]");
-                        ui.label("[ ] [ ] [R] [ ] [ ]");
-                        ui.label("[ ] [ ] [ ] [ ] [ ]");
-                        ui.colored_label(
-                            egui::Color32::from_rgb(140, 222, 255),
-                            "next command: move.forward",
-                        );
-                    });
-                }
-            });
-        });
-    }
-
-    fn draw_almanac_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Known Programming Functions").strong());
-        ui.separator();
-
-        let entries = [
-            (
-                "print(value)",
-                "Writes a value to the console.",
-                "print(\"hello\")",
-            ),
-            (
-                "move.forward(n)",
-                "Moves the robot forward n tiles.",
-                "move.forward(3)",
-            ),
-            (
-                "move.back(n)",
-                "Moves the robot backward n tiles.",
-                "move.back(1)",
-            ),
-            (
-                "turn.left()",
-                "Rotates the robot left by one quarter turn.",
-                "turn.left()",
-            ),
-            (
-                "turn.right()",
-                "Rotates the robot right by one quarter turn.",
-                "turn.right()",
-            ),
-            (
-                "scan()",
-                "Reads the tile or object in front of the robot.",
-                "scan()",
-            ),
-            ("wait(t)", "Pauses execution for t seconds.", "wait(0.5)"),
-            (
-                "harvest()",
-                "Uses the robot tool on the current tile.",
-                "harvest()",
-            ),
-        ];
-
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (name, meaning, usage) in entries {
-                ui.label(egui::RichText::new(name).monospace().strong());
-                ui.label(meaning);
-                ui.colored_label(egui::Color32::from_rgb(140, 222, 255), usage);
-                ui.separator();
-            }
-        });
-    }
-}
-
-fn tab_button(ui: &mut egui::Ui, current: &mut NotebookTab, tab: NotebookTab, label: &str) {
-    let selected = *current == tab;
-    if ui.selectable_label(selected, label).clicked() {
-        *current = tab;
-    }
-}
-
-fn style_notebook_egui(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.visuals = egui::Visuals::dark();
-    style.visuals.window_fill = egui::Color32::from_rgb(16, 20, 30);
-    style.visuals.panel_fill = egui::Color32::from_rgb(16, 20, 30);
-    style.visuals.faint_bg_color = egui::Color32::from_rgb(26, 32, 46);
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(11, 15, 24);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(70, 115, 208);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(58, 92, 165);
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(32, 48, 80);
-    style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(22, 29, 42);
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(70, 115, 208);
-    style.visuals.override_text_color = Some(egui::Color32::from_rgb(228, 236, 251));
-    ctx.set_style(style);
 }
 
 fn camera_zoom_for_fov(view_height: f32, render_target: bool) -> Vec2 {
@@ -1298,10 +1107,4 @@ fn draw_player_health(
             );
         }
     }
-}
-
-fn resolution_ui_scale() -> f32 {
-    let width_scale = screen_width().max(1.0) / UI_BASE_WIDTH;
-    let height_scale = screen_height().max(1.0) / UI_BASE_HEIGHT;
-    width_scale.min(height_scale).clamp(0.85, 1.75)
 }

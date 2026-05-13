@@ -105,27 +105,43 @@ impl Player {
 
         let mut pos = self.pos;
         let mut vel = self.vel;
+        let tile = map.tile_size().max(1.0);
+        let displacement = vel.length() * dt;
+        let steps = ((displacement / (tile * 0.4)).ceil() as i32).clamp(1, 8) as usize;
+        let step_dt = dt / steps as f32;
 
-        pos.x += vel.x * dt;
-        let probe = hitbox_center_world(pos, self.hitbox);
-        if let Some(grid) = map.grid_index(probe) {
-            let radius = collision_radius(map, vel, dt);
-            map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
-            let (resolved, vx) =
-                resolve_collisions_axis(self.hitbox, pos, vel.x, &self.collision_scratch, Axis::X);
-            pos = resolved;
-            vel.x = vx;
-        }
+        for _ in 0..steps {
+            pos.x += vel.x * step_dt;
+            let probe = hitbox_center_world(pos, self.hitbox);
+            if let Some(grid) = map.grid_index(probe) {
+                let radius = collision_radius(map, vel, step_dt);
+                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                let (resolved, vx) = resolve_collisions_axis(
+                    self.hitbox,
+                    pos,
+                    vel.x,
+                    &self.collision_scratch,
+                    Axis::X,
+                );
+                pos = resolved;
+                vel.x = vx;
+            }
 
-        pos.y += vel.y * dt;
-        let probe = hitbox_center_world(pos, self.hitbox);
-        if let Some(grid) = map.grid_index(probe) {
-            let radius = collision_radius(map, vel, dt);
-            map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
-            let (resolved, vy) =
-                resolve_collisions_axis(self.hitbox, pos, vel.y, &self.collision_scratch, Axis::Y);
-            pos = resolved;
-            vel.y = vy;
+            pos.y += vel.y * step_dt;
+            let probe = hitbox_center_world(pos, self.hitbox);
+            if let Some(grid) = map.grid_index(probe) {
+                let radius = collision_radius(map, vel, step_dt);
+                map.fill_hitboxes_around_grid(grid, radius, &mut self.collision_scratch);
+                let (resolved, vy) = resolve_collisions_axis(
+                    self.hitbox,
+                    pos,
+                    vel.y,
+                    &self.collision_scratch,
+                    Axis::Y,
+                );
+                pos = resolved;
+                vel.y = vy;
+            }
         }
 
         self.pos = pos;

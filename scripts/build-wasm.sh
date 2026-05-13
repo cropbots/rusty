@@ -23,7 +23,7 @@ cp -a "${ASSETS_SOURCE}/." "${ASSETS_DEST}/"
 
 "${ROOT_DIR}/scripts/generate-wasm-indexes.sh"
 
-for dir in entity particle sound structure; do
+for dir in entity particle sound structure items; do
   src_dir="${ROOT_DIR}/src/${dir}"
   dest_dir="${ASSETS_DEST}/${dir}"
   mkdir -p "${dest_dir}"

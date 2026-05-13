@@ -18,7 +18,7 @@ const SCENE_DECOR_DENSITY_SCALE: f32 = 0.75;
 const SCENE_DECOR_MAX_PER_DEF: usize = 1200;
 const EXPEDITION_DUNGEON_SEED: u32 = 0xD06E_0B07;
 const EXPEDITION_WALL_TILE: u8 = 225;
-const EXPEDITION_FLOOR_TILE: u8 = 226;
+pub const EXPEDITION_FLOOR_TILE: u8 = 226;
 const EXPEDITION_DUNGEON_ROOM_TARGET: usize = 140;
 const EXPEDITION_DUNGEON_MARGIN: usize = 8;
 const EXPEDITION_HALL_LENGTH: usize = 2;
@@ -74,6 +74,36 @@ enum Direction {
 struct PendingRoom {
     room: TileRect,
     hall: TileRect,
+}
+
+struct DungeonLayout {
+    rooms: Vec<TileRect>,
+    edges: Vec<(usize, usize)>,
+}
+
+#[derive(Clone, Copy)]
+struct SpawnArea {
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+}
+
+impl SpawnArea {
+    fn from_room(room: TileRect) -> Self {
+        Self {
+            x0: room.x,
+            y0: room.y,
+            x1: room.max_x(),
+            y1: room.max_y(),
+        }
+    }
+}
+
+pub struct SpawnRule<'a> {
+    pub entity_id: &'a str,
+    pub count: usize,
+    pub min_spacing_tiles: f32,
 }
 
 struct DungeonRng {
@@ -162,12 +192,13 @@ pub fn scene_expedition(
     next.fill_layer(LayerKind::Foreground, u8::MAX);
     next.fill_collision(false);
     next.set_custom_border_hitbox(None);
-    let rooms = generate_expedition_dungeon(&mut next);
+    let layout = generate_expedition_dungeon(&mut next);
     place_expedition_dungeon_walls(&mut next);
+    apply_dungeon_hpa_topology(&mut next, &layout);
     *map = next;
 
     entities.clear();
-    spawn_expedition_entities(entities, db, registry, &rooms, tile_size);
+    spawn_expedition_entities(entities, db, registry, &layout.rooms, tile_size);
 }
 
 pub fn scene_farm(
@@ -221,9 +252,10 @@ pub fn save_farm_scene(map: &TileMap) -> bool {
     save_farm_snapshot_json(&json)
 }
 
-fn generate_expedition_dungeon(map: &mut TileMap) -> Vec<TileRect> {
+fn generate_expedition_dungeon(map: &mut TileMap) -> DungeonLayout {
     let mut rng = DungeonRng::new(EXPEDITION_DUNGEON_SEED);
     let mut rooms = Vec::with_capacity(EXPEDITION_DUNGEON_ROOM_TARGET);
+    let mut edges = Vec::with_capacity(EXPEDITION_DUNGEON_ROOM_TARGET * 2);
     let start = TileRect {
         x: EXPEDITION_WIDTH / 2 - 2,
         y: EXPEDITION_HEIGHT / 2 - 2,
@@ -239,7 +271,8 @@ fn generate_expedition_dungeon(map: &mut TileMap) -> Vec<TileRect> {
             break;
         }
 
-        let base = rooms[rng.usize(rooms.len())];
+        let base_idx = rng.usize(rooms.len());
+        let base = rooms[base_idx];
         let direction = match rng.usize(4) {
             0 => Direction::North,
             1 => Direction::East,
@@ -256,10 +289,43 @@ fn generate_expedition_dungeon(map: &mut TileMap) -> Vec<TileRect> {
 
         carve_floor_rect(map, candidate.hall);
         carve_floor_rect(map, candidate.room);
+        let next_idx = rooms.len();
         rooms.push(candidate.room);
+        edges.push((base_idx, next_idx));
     }
 
-    rooms
+    DungeonLayout { rooms, edges }
+}
+
+fn apply_dungeon_hpa_topology(map: &mut TileMap, layout: &DungeonLayout) {
+    let len = map.width() * map.height();
+    let mut room_ids = vec![-1i16; len];
+    let mut centers = Vec::with_capacity(layout.rooms.len());
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); layout.rooms.len()];
+    for (room_idx, room) in layout.rooms.iter().enumerate() {
+        for y in room.y..room.max_y() {
+            for x in room.x..room.max_x() {
+                room_ids[y * map.width() + x] = room_idx as i16;
+            }
+        }
+        let cx = room.x + room.w / 2;
+        let cy = room.y + room.h / 2;
+        centers.push(crate::map::GridIndex {
+            x: cx as i32,
+            y: cy as i32,
+        });
+    }
+    for &(a, b) in &layout.edges {
+        if a < adjacency.len() && b < adjacency.len() {
+            adjacency[a].push(b);
+            adjacency[b].push(a);
+        }
+    }
+    for neighbors in &mut adjacency {
+        neighbors.sort_unstable();
+        neighbors.dedup();
+    }
+    map.set_hpa_topology(room_ids, centers, adjacency);
 }
 
 fn pending_room_from(
@@ -427,7 +493,7 @@ fn place_expedition_dungeon_walls(map: &mut TileMap) {
 
     for (x, y) in walls {
         map.set_tile(LayerKind::Foreground, x, y, EXPEDITION_WALL_TILE);
-        map.set_collision(x, y, true);
+        map.set_dungeon_wall_collision(x, y, true);
     }
 }
 
@@ -459,38 +525,68 @@ fn spawn_expedition_entities(
     tile_size: f32,
 ) {
     let mut rng = DungeonRng::new(EXPEDITION_DUNGEON_SEED ^ 0x54A3_11C5);
-    spawn_entity_group(
-        entities, db, registry, rooms, tile_size, &mut rng, "virabird", 5,
-    );
-    spawn_entity_group(
-        entities, db, registry, rooms, tile_size, &mut rng, "virat", 2,
-    );
-    spawn_entity_group(
-        entities, db, registry, rooms, tile_size, &mut rng, "chopbot", 2,
-    );
+    let areas: Vec<SpawnArea> = rooms.iter().copied().map(SpawnArea::from_room).collect();
+    let rules = [
+        SpawnRule {
+            entity_id: "virabird",
+            count: 5,
+            min_spacing_tiles: 1.5,
+        },
+        SpawnRule {
+            entity_id: "virat",
+            count: 2,
+            min_spacing_tiles: 2.0,
+        },
+        SpawnRule {
+            entity_id: "chopbot",
+            count: 2,
+            min_spacing_tiles: 2.0,
+        },
+    ];
+    spawn_entities_with_rules(entities, db, registry, &areas, &rules, tile_size, &mut rng);
 }
 
-fn spawn_entity_group(
+fn spawn_entities_with_rules(
     entities: &mut Vec<Entity>,
     db: &EntityDatabase,
     registry: &MovementRegistry,
-    rooms: &[TileRect],
+    areas: &[SpawnArea],
+    rules: &[SpawnRule<'_>],
     tile_size: f32,
     rng: &mut DungeonRng,
-    entity_id: &str,
-    count: usize,
 ) {
-    if rooms.is_empty() {
+    if areas.is_empty() || rules.is_empty() {
         return;
     }
 
-    for _ in 0..count {
-        let room = rooms[rng.usize(rooms.len())];
-        let x = room.x + rng.usize(room.w);
-        let y = room.y + rng.usize(room.h);
-        let pos = vec2((x as f32 + 0.5) * tile_size, (y as f32 + 0.5) * tile_size);
-        if let Some(entity) = Entity::spawn(db, entity_id, pos, registry) {
-            entities.push(entity);
+    let mut taken_positions: Vec<Vec2> = Vec::with_capacity(rules.iter().map(|r| r.count).sum());
+    for rule in rules {
+        let min_sq = (rule.min_spacing_tiles.max(0.0) * tile_size).powi(2);
+        let attempts = (rule.count * 24).max(32);
+        let mut spawned = 0usize;
+        for _ in 0..attempts {
+            if spawned >= rule.count {
+                break;
+            }
+            let area = areas[rng.usize(areas.len())];
+            if area.x0 >= area.x1 || area.y0 >= area.y1 {
+                continue;
+            }
+            let x = area.x0 + rng.usize(area.x1 - area.x0);
+            let y = area.y0 + rng.usize(area.y1 - area.y0);
+            let pos = vec2((x as f32 + 0.5) * tile_size, (y as f32 + 0.5) * tile_size);
+            if min_sq > 0.0
+                && taken_positions
+                    .iter()
+                    .any(|other| other.distance_squared(pos) < min_sq)
+            {
+                continue;
+            }
+            if let Some(entity) = Entity::spawn(db, rule.entity_id, pos, registry) {
+                entities.push(entity);
+                taken_positions.push(pos);
+                spawned += 1;
+            }
         }
     }
 }

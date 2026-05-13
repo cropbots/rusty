@@ -326,6 +326,14 @@ pub struct TileMapSnapshot {
     pub foreground: Vec<u8>,
     pub overlay: Vec<u8>,
     pub collision_mask: Vec<u8>,
+    #[serde(default)]
+    pub dungeon_wall_mask: Vec<u8>,
+}
+
+#[derive(Clone)]
+pub struct HpaRoom {
+    pub center: GridIndex,
+    pub neighbors: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -549,6 +557,7 @@ pub struct TileMap {
     overlay: Vec<u8>,
     solid: Vec<bool>,
     collision_mask: Vec<u8>,
+    dungeon_wall_mask: Vec<u8>,
     collision_blocks: Vec<Rect>,
     collision_dirty: bool,
     chunk_cols: usize,
@@ -568,6 +577,8 @@ pub struct TileMap {
     grid_size: Vec2,
     border_thickness: f32,
     custom_border_hitbox: Option<Rect>,
+    hpa_room_ids: Vec<i16>,
+    hpa_rooms: Vec<HpaRoom>,
 }
 
 impl TileMap {
@@ -637,6 +648,7 @@ impl TileMap {
             overlay: vec![EMPTY_TILE; len],
             solid: vec![false; len],
             collision_mask: vec![0; len],
+            dungeon_wall_mask: vec![0; len],
             collision_blocks: Vec::new(),
             collision_dirty: true,
             chunk_cols,
@@ -656,6 +668,8 @@ impl TileMap {
             grid_size,
             border_thickness,
             custom_border_hitbox: None,
+            hpa_room_ids: vec![-1; len],
+            hpa_rooms: Vec::new(),
         }
     }
 
@@ -686,6 +700,7 @@ impl TileMap {
             overlay: vec![EMPTY_TILE; len],
             solid: vec![false; len],
             collision_mask: vec![0; len],
+            dungeon_wall_mask: vec![0; len],
             collision_blocks: Vec::new(),
             collision_dirty: true,
             chunk_cols,
@@ -705,6 +720,8 @@ impl TileMap {
             grid_size,
             border_thickness,
             custom_border_hitbox: None,
+            hpa_room_ids: vec![-1; len],
+            hpa_rooms: Vec::new(),
         }
     }
 
@@ -1005,7 +1022,7 @@ impl TileMap {
             let next_mask = mask & 0x0F;
             if self.collision_mask[idx] != next_mask {
                 self.collision_mask[idx] = next_mask;
-                self.solid[idx] = next_mask != 0;
+                self.solid[idx] = self.collision_mask[idx] != 0 || self.dungeon_wall_mask[idx] != 0;
                 collision_changed = true;
             }
         }
@@ -1056,7 +1073,7 @@ impl TileMap {
             let next_mask = mask & 0x0F;
             if self.collision_mask[idx] != next_mask {
                 self.collision_mask[idx] = next_mask;
-                self.solid[idx] = next_mask != 0;
+                self.solid[idx] = self.collision_mask[idx] != 0 || self.dungeon_wall_mask[idx] != 0;
                 collision_changed = true;
             }
         }
@@ -1288,9 +1305,22 @@ impl TileMap {
         }
         let i = self.idx(x, y);
         let next_mask = if solid { 0x0F } else { 0 };
-        if self.solid[i] != solid || self.collision_mask[i] != next_mask {
-            self.solid[i] = solid;
+        if self.collision_mask[i] != next_mask {
             self.collision_mask[i] = next_mask;
+            self.solid[i] = self.collision_mask[i] != 0 || self.dungeon_wall_mask[i] != 0;
+            self.collision_dirty = true;
+        }
+    }
+
+    pub fn set_dungeon_wall_collision(&mut self, x: usize, y: usize, solid: bool) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let i = self.idx(x, y);
+        let next_mask = if solid { 0x0F } else { 0 };
+        if self.dungeon_wall_mask[i] != next_mask {
+            self.dungeon_wall_mask[i] = next_mask;
+            self.solid[i] = self.collision_mask[i] != 0 || self.dungeon_wall_mask[i] != 0;
             self.collision_dirty = true;
         }
     }
@@ -1298,6 +1328,7 @@ impl TileMap {
     pub fn fill_collision(&mut self, solid: bool) {
         self.solid.fill(solid);
         self.collision_mask.fill(if solid { 0x0F } else { 0 });
+        self.dungeon_wall_mask.fill(0);
         self.collision_dirty = true;
     }
 
@@ -1330,6 +1361,7 @@ impl TileMap {
                 let idx = self.idx(x, y);
                 self.solid[idx] = solid;
                 self.collision_mask[idx] = if solid { 0x0F } else { 0 };
+                self.dungeon_wall_mask[idx] = 0;
             }
         }
 
@@ -1663,6 +1695,17 @@ impl TileMap {
     }
 
     pub fn fill_hitboxes_around_grid(&self, grid: GridIndex, radius: i32, out: &mut Vec<Rect>) {
+        self.fill_hitboxes_around_grid_filtered(grid, radius, out, true, true);
+    }
+
+    pub fn fill_hitboxes_around_grid_filtered(
+        &self,
+        grid: GridIndex,
+        radius: i32,
+        out: &mut Vec<Rect>,
+        include_normal: bool,
+        include_dungeon_walls: bool,
+    ) {
         out.clear();
         let start_x = grid.x - radius;
         let end_x = grid.x + radius;
@@ -1678,7 +1721,18 @@ impl TileMap {
                 if ux >= self.width || uy >= self.height {
                     continue;
                 }
-                let mask = self.collision_mask[self.idx(ux, uy)] & 0x0F;
+                let idx = self.idx(ux, uy);
+                let normal_mask = if include_normal {
+                    self.collision_mask[idx] & 0x0F
+                } else {
+                    0
+                };
+                let dungeon_mask = if include_dungeon_walls {
+                    self.dungeon_wall_mask[idx] & 0x0F
+                } else {
+                    0
+                };
+                let mask = normal_mask | dungeon_mask;
                 if mask == 0 {
                     continue;
                 }
@@ -1709,6 +1763,47 @@ impl TileMap {
         self.tile_size
     }
 
+    pub fn set_hpa_topology(
+        &mut self,
+        room_ids: Vec<i16>,
+        centers: Vec<GridIndex>,
+        adjacency: Vec<Vec<usize>>,
+    ) {
+        let len = self.width * self.height;
+        if room_ids.len() != len || centers.len() != adjacency.len() {
+            self.clear_hpa_topology();
+            return;
+        }
+        self.hpa_room_ids = room_ids;
+        self.hpa_rooms = centers
+            .into_iter()
+            .zip(adjacency)
+            .map(|(center, neighbors)| HpaRoom { center, neighbors })
+            .collect();
+    }
+
+    pub fn clear_hpa_topology(&mut self) {
+        self.hpa_room_ids.fill(-1);
+        self.hpa_rooms.clear();
+    }
+
+    pub fn hpa_room_index(&self, grid: GridIndex) -> Option<usize> {
+        if grid.x < 0 || grid.y < 0 {
+            return None;
+        }
+        let ux = grid.x as usize;
+        let uy = grid.y as usize;
+        if ux >= self.width || uy >= self.height {
+            return None;
+        }
+        let id = self.hpa_room_ids[self.idx(ux, uy)];
+        if id < 0 { None } else { Some(id as usize) }
+    }
+
+    pub fn hpa_rooms(&self) -> &[HpaRoom] {
+        &self.hpa_rooms
+    }
+
     pub fn width(&self) -> usize {
         self.width
     }
@@ -1723,10 +1818,12 @@ impl TileMap {
         self.overlay.fill(EMPTY_TILE);
         self.solid.fill(false);
         self.collision_mask.fill(0);
+        self.dungeon_wall_mask.fill(0);
         self.collision_dirty = true;
         self.structure_apply = None;
         self.structure_interactors.clear();
         self.custom_border_hitbox = None;
+        self.clear_hpa_topology();
         self.mark_all_chunks_dirty_all_layers();
     }
 
@@ -1739,6 +1836,7 @@ impl TileMap {
             foreground: self.foreground.clone(),
             overlay: self.overlay.clone(),
             collision_mask: self.collision_mask.clone(),
+            dungeon_wall_mask: self.dungeon_wall_mask.clone(),
         }
     }
 
@@ -1754,6 +1852,7 @@ impl TileMap {
             || snapshot.foreground.len() != len
             || snapshot.overlay.len() != len
             || snapshot.collision_mask.len() != len
+            || (!snapshot.dungeon_wall_mask.is_empty() && snapshot.dungeon_wall_mask.len() != len)
         {
             return Err("snapshot layer lengths do not match map dimensions".to_string());
         }
@@ -1762,13 +1861,21 @@ impl TileMap {
         self.foreground.clone_from(&snapshot.foreground);
         self.overlay.clone_from(&snapshot.overlay);
         self.collision_mask.clone_from(&snapshot.collision_mask);
-        for (i, mask) in self.collision_mask.iter().enumerate() {
-            self.solid[i] = (*mask & 0x0F) != 0;
+        if snapshot.dungeon_wall_mask.len() == len {
+            self.dungeon_wall_mask
+                .clone_from(&snapshot.dungeon_wall_mask);
+        } else {
+            self.dungeon_wall_mask.fill(0);
+        }
+        for i in 0..self.collision_mask.len() {
+            self.solid[i] =
+                (self.collision_mask[i] & 0x0F) != 0 || (self.dungeon_wall_mask[i] & 0x0F) != 0;
         }
         self.collision_dirty = true;
         self.structure_apply = None;
         self.structure_interactors.clear();
         self.custom_border_hitbox = None;
+        self.clear_hpa_topology();
         self.mark_all_chunks_dirty_all_layers();
         Ok(())
     }

@@ -2,6 +2,9 @@ use macroquad::file::load_string;
 use macroquad::prelude::*;
 use serde::Deserialize;
 
+pub const UI_BASE_WIDTH: f32 = 960.0;
+pub const UI_BASE_HEIGHT: f32 = 540.0;
+
 pub fn random_u32() -> u32 {
     macroquad::rand::rand()
 }
@@ -237,4 +240,10 @@ pub fn clamp_hitbox_to_rect(hitbox: Rect, pos: Vec2, bounds: Rect) -> Vec2 {
     let max_y = bounds.y + bounds.h - hitbox.h - hitbox.y;
 
     vec2(pos.x.clamp(min_x, max_x), pos.y.clamp(min_y, max_y))
+}
+
+pub fn resolution_ui_scale() -> f32 {
+    let width_scale = screen_width().max(1.0) / UI_BASE_WIDTH;
+    let height_scale = screen_height().max(1.0) / UI_BASE_HEIGHT;
+    width_scale.min(height_scale).clamp(0.85, 1.75)
 }

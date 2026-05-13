@@ -42,5 +42,6 @@ generate_index "src/entity/enemy" "*.yaml"
 generate_index "src/entity/friend" "*.yaml"
 generate_index "src/entity/misc" "*.yaml"
 generate_index "src/particle" "*.yaml"
+generate_index "src/items" "*.json"
 
 printf 'WASM index manifests generated.\n'
