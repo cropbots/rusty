@@ -1,0 +1,45 @@
+id: cropbot
+traits:
+  - dynamic_targeting
+  - no_player_collision
+  - pathfinding
+stats:
+  hp: 12
+  speed: 180
+  damage: 0
+visuals:
+  sprite: "src/assets/items/gear.png"
+  draw_params:
+    dest_size: [16, 16]
+    rotation: 0.0
+    flip_x: false
+    flip_y: false
+    pivot: [0, 0]
+    color: [255, 255, 255, 255]
+    offset: [0, 0]
+hitbox:
+  x: 0
+  y: 0
+  w: 16
+  h: 16
+behavior:
+  type: selector
+  children:
+    - type: sequence
+      always: true
+      children:
+        - type: action
+          name: smart_seek_farm_tile
+          params:
+            seek_speed: 130
+        - type: action
+          name: bonemeal_current_tile
+    - type: sequence
+      always: true
+      children:
+        - type: action
+          name: seek_nearest_empty_farm_tile
+          params:
+            seek_speed: 130
+        - type: action
+          name: seed_current_tile

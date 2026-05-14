@@ -1,0 +1,11 @@
+{
+  "id": "virabird_summon",
+  "name": "Virabird Summon",
+  "short_name": "Virabird",
+  "category": "utility",
+  "icon": {
+    "type": "texture",
+    "path": "src/assets/objects/virabird.png"
+  },
+  "accent": "#9B59B6"
+}

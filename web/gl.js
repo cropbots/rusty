@@ -1581,72 +1581,29 @@ function add_missing_functions_stabs(obj) {
 }
 
 function load(wasm_path) {
-    var req = fetch(wasm_path);
-
     register_plugins(plugins);
 
-    if (typeof WebAssembly.instantiateStreaming === 'function') {
-        WebAssembly.instantiateStreaming(fetch(wasm_path), importObject)
-            .then(({ instance }) => {
-                wasm_memory = instance.exports.memory;
-                wasm_exports = instance.exports;
+    fetch(wasm_path)
+        .then(function (x) { return x.arrayBuffer(); })
+        .then(function (bytes) { return WebAssembly.compile(bytes); })
+        .then(function (module) {
+            add_missing_functions_stabs(module);
+            return WebAssembly.instantiate(module, importObject);
+        })
+        .then(function (instance) {
+            wasm_memory = instance.exports.memory;
+            wasm_exports = instance.exports;
 
-                var crate_version = wasm_exports.crate_version();
-                if (version != crate_version) {
-                    console.error(
-                        "Version mismatch: gl.js version is: " + version +
-                        ", miniquad crate version is: " + crate_version);
-                }
-                init_plugins(plugins);
-                instance.exports.main();
-            })
-            .catch(err => {
-                console.warn("instantiateStreaming failed, falling back to standard WebAssembly.instantiate:", err);
-                fetch(wasm_path)
-                    .then(function (x) { return x.arrayBuffer(); })
-                    .then(function (bytes) { return WebAssembly.instantiate(bytes, importObject); })
-                    .then(function (result) {
-                        var instance = result.instance || result;
-                        wasm_memory = instance.exports.memory;
-                        wasm_exports = instance.exports;
-
-                        var crate_version = wasm_exports.crate_version();
-                        if (version != crate_version) {
-                            console.error(
-                                "Version mismatch: gl.js version is: " + version +
-                                ", miniquad crate version is: " + crate_version);
-                        }
-                        init_plugins(plugins);
-                        instance.exports.main();
-                    })
-                    .catch(err2 => {
-                        console.error("WASM failed to load after fallback", err2);
-                    });
-            });
-    } else {
-        req
-            .then(function (x) { return x.arrayBuffer(); })
-            .then(function (bytes) { return WebAssembly.compile(bytes); })
-            .then(function (obj) {
-                add_missing_functions_stabs(obj);
-                return WebAssembly.instantiate(obj, importObject);
-            })
-            .then(function (obj) {
-                wasm_memory = obj.exports.memory;
-                wasm_exports = obj.exports;
-
-                var crate_version = wasm_exports.crate_version();
-                if (version != crate_version) {
-                    console.error(
-                        "Version mismatch: gl.js version is: " + version +
-                        ", rust sapp-wasm crate version is: " + crate_version);
-                }
-                init_plugins(plugins);
-                obj.exports.main();
-            })
-            .catch(err => {
-                console.error("WASM failed to load, probably incompatible gl.js version");
-                console.error(err);
-            });
-    }
+            var crate_version = wasm_exports.crate_version();
+            if (version != crate_version) {
+                console.error(
+                    "Version mismatch: gl.js version is: " + version +
+                    ", miniquad crate version is: " + crate_version);
+            }
+            init_plugins(plugins);
+            instance.exports.main();
+        })
+        .catch(err => {
+            console.error("WASM failed to load", err);
+        });
 }

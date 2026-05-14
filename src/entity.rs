@@ -78,8 +78,8 @@ pub const DEF_FLAG_ERRATIC: u16 = 1 << 11;
 pub const DEF_FLAG_PATHFINDING: u16 = 1 << 12;
 pub const DEF_FLAG_PHASE_DUNGEON_WALLS: u16 = 1 << 13;
 
-const PATHFIND_MAX_VISITED_TILES: usize = 6_000;
-const PATHFIND_REPLAN_INTERVAL: f32 = 0.55;
+const PATHFIND_MAX_VISITED_TILES: usize = 3_000;
+const PATHFIND_REPLAN_INTERVAL: f32 = 0.85;
 
 impl EntityKind {
     fn from_dir(name: &str) -> Option<Self> {
@@ -364,6 +364,7 @@ pub struct EntityInstance {
     dealt_damage_pending: bool,
     dash_cooldown_memory: HashMap<String, f32>,
     path_follow: Option<PathFollowState>,
+    pub cropbot_slots: CropbotSlots,
 }
 
 #[derive(Clone)]
@@ -375,6 +376,14 @@ struct PathFollowState {
     path: Vec<GridIndex>,
     next_idx: usize,
     repath_timer: f32,
+    last_from_grid: GridIndex,
+}
+
+#[derive(Clone, Copy)]
+pub struct CropbotSlots {
+    pub seed: Option<u8>,
+    pub bonemeal: Option<u8>,
+    pub tool: Option<u8>,
 }
 
 impl EntityInstance {
@@ -480,6 +489,23 @@ impl EntityInstance {
         }
         self.behaviors = behaviors;
         self.apply_pathfinding_velocity(map, ctx, def_flags, dt);
+
+        if db.entities[self.def].id == "chopbot" {
+            if let Some(Target::Player(player)) = self.current_target {
+                let dist = self.pos.distance(player.pos);
+                if dist > 620.0 {
+                    let toward = (self.pos - player.pos).normalize_or_zero();
+                    let fallback = if toward.length_squared() > 0.0 {
+                        toward
+                    } else {
+                        vec2(1.0, 0.0)
+                    };
+                    self.pos = player.pos + fallback * 48.0;
+                    self.vel = Vec2::ZERO;
+                    self.path_follow = None;
+                }
+            }
+        }
 
         let mut max_speed = self.speed.max(1.0);
         for behavior in self.behaviors.iter() {
@@ -626,7 +652,7 @@ impl EntityInstance {
         def_flags: u16,
         dt: f32,
     ) {
-        let has_basic_path_behavior = self.behaviors.iter().any(|behavior| {
+        let has_path_behavior = self.behaviors.iter().any(|behavior| {
             matches!(
                 behavior.name.as_str(),
                 "wander"
@@ -648,9 +674,10 @@ impl EntityInstance {
                     | "flee_nearest_enemy"
                     | "flee_nearest_friend"
                     | "flee_nearest_misc"
+                    | "bird_orbit"
             )
         });
-        if ((def_flags & DEF_FLAG_PATHFINDING) == 0 && !has_basic_path_behavior)
+        if ((def_flags & DEF_FLAG_PATHFINDING) == 0 && !has_path_behavior)
             || self.vel.length_squared() <= 0.0001
         {
             return;
@@ -658,15 +685,27 @@ impl EntityInstance {
         let Some(target_pos) = self.current_target.as_ref().map(Target::position) else {
             return;
         };
+
         let to_target = target_pos - self.pos;
-        if to_target.length_squared() <= 0.0001 || self.vel.dot(to_target) <= 0.0 {
+        let dist_sq = to_target.length_squared();
+        if dist_sq <= 0.0001 {
             return;
         }
-        let Some(dir) = ctx.pathfind_direction(map, self, target_pos, dt) else {
-            return;
+
+        // Determine if we are seeking or fleeing based on our current velocity direction.
+        let dot = self.vel.dot(to_target);
+        let goal = if dot < 0.0 {
+            // Fleeing: Pathfind to a point far away in our desired flee direction.
+            self.pos + self.vel.normalize() * 320.0
+        } else {
+            // Seeking: Pathfind directly to the target.
+            target_pos
         };
-        if dir.length_squared() > 0.0001 {
-            self.vel = dir.normalize() * self.vel.length();
+
+        if let Some(dir) = ctx.pathfind_direction(map, self, goal, dt) {
+            if dir.length_squared() > 0.0001 {
+                self.vel = dir.normalize() * self.vel.length();
+            }
         }
     }
 
@@ -803,6 +842,14 @@ impl MovementRegistry {
         registry.register("seek_nearest_friend", movement_seek_nearest_friend);
         registry.register("seek_nearest_misc", movement_seek_nearest_misc);
         registry.register("seek_player", movement_seek_player);
+        registry.register("seek_nearest_farm_tile", movement_seek_nearest_farm_tile);
+        registry.register("smart_seek_farm_tile", movement_smart_seek_farm_tile);
+        registry.register(
+            "seek_nearest_empty_farm_tile",
+            movement_seek_nearest_empty_farm_tile,
+        );
+        registry.register("bonemeal_current_tile", movement_bonemeal_current_tile);
+        registry.register("seed_current_tile", movement_seed_current_tile);
         registry.register("flee", movement_flee);
         registry.register("watch", movement_watch);
         registry.register("watch_nearest_entity", movement_watch_nearest_entity);
@@ -1070,6 +1117,7 @@ impl EntityContext {
             if follow.goal_grid != goal_grid
                 || follow.path.is_empty()
                 || follow.next_idx >= follow.path.len()
+                || follow.last_from_grid != from_grid
             {
                 needs_replan = true;
             } else if follow.repath_timer <= 0.0 {
@@ -1102,10 +1150,12 @@ impl EntityContext {
                 path,
                 next_idx: 0,
                 repath_timer: PATHFIND_REPLAN_INTERVAL,
+                last_from_grid: from_grid,
             });
         }
 
         let follow = entity.path_follow.as_mut()?;
+        follow.last_from_grid = from_grid;
         while follow.next_idx < follow.path.len() {
             let next = follow.path[follow.next_idx];
             if !is_pathable_grid(map, next) {
@@ -1497,6 +1547,11 @@ impl EntityDatabase {
             dealt_damage_pending: false,
             dash_cooldown_memory: HashMap::new(),
             path_follow: None,
+            cropbot_slots: CropbotSlots {
+                seed: Some(24),
+                bonemeal: Some(1),
+                tool: Some(1),
+            },
         })
     }
 }

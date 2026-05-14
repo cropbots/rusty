@@ -441,6 +441,72 @@ pub fn movement_seek_player(
     }
 }
 
+pub fn movement_seek_nearest_farm_tile(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    // Placeholder: until movement callbacks accept map-mutable context, we seek player as proxy target.
+    if let Some(player) = ctx.player {
+        seek_towards_target(
+            entity,
+            behavior,
+            dt,
+            params,
+            "seek_speed",
+            Target::Player(player),
+        );
+    } else {
+        movement_wander(entity, behavior, dt, params, ctx);
+    }
+}
+
+pub fn movement_smart_seek_farm_tile(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    movement_seek_nearest_farm_tile(entity, behavior, dt, params, ctx);
+}
+
+pub fn movement_seek_nearest_empty_farm_tile(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &EntityContext,
+) {
+    movement_seek_nearest_farm_tile(entity, behavior, dt, params, ctx);
+}
+
+pub fn movement_bonemeal_current_tile(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    _params: &MovementParams,
+    _ctx: &EntityContext,
+) {
+    if entity.cropbot_slots.bonemeal.is_some() {
+        // Reserved for map stage mutation pipeline.
+    }
+}
+
+pub fn movement_seed_current_tile(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    _params: &MovementParams,
+    _ctx: &EntityContext,
+) {
+    if entity.cropbot_slots.seed.is_some() {
+        // Reserved for map seed placement pipeline.
+    }
+}
+
 pub fn movement_flee_nearest_entity(
     entity: &mut EntityInstance,
     behavior: &mut BehaviorRuntime,

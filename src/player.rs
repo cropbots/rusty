@@ -183,6 +183,11 @@ impl Player {
         self.dash_dir = Vec2::ZERO;
     }
 
+    pub fn clamp_to_map(&mut self, map: &TileMap) {
+        let border = map.get_border_hitbox();
+        self.pos = clamp_hitbox_to_rect(self.hitbox, self.pos, border);
+    }
+
     pub fn world_hitbox(&self) -> Rect {
         Rect::new(
             self.pos.x + self.hitbox.x,

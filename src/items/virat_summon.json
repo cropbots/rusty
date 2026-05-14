@@ -1,0 +1,11 @@
+{
+  "id": "virat_summon",
+  "name": "Virat Summon",
+  "short_name": "Virat",
+  "category": "utility",
+  "icon": {
+    "type": "texture",
+    "path": "src/assets/objects/virat.png"
+  },
+  "accent": "#E67E22"
+}

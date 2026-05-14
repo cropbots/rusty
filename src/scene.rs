@@ -172,7 +172,7 @@ pub fn scene_expedition(
     entities: &mut Vec<Entity>,
     db: &EntityDatabase,
     registry: &MovementRegistry,
-    _structures: &[StructureDef],
+    structures: &[StructureDef],
     _ground_tile: u8,
     tile_size: f32,
     chunk_alloc_per_frame: usize,
@@ -195,10 +195,113 @@ pub fn scene_expedition(
     let layout = generate_expedition_dungeon(&mut next);
     place_expedition_dungeon_walls(&mut next);
     apply_dungeon_hpa_topology(&mut next, &layout);
+    place_expedition_blocks(&mut next, structures, &layout.rooms);
     *map = next;
 
     entities.clear();
-    spawn_expedition_entities(entities, db, registry, &layout.rooms, tile_size);
+    spawn_expedition_entities(map, entities, db, registry, &layout.rooms, tile_size);
+}
+
+fn place_expedition_blocks(map: &mut TileMap, structures: &[StructureDef], rooms: &[TileRect]) {
+    let mut rng = DungeonRng::new(EXPEDITION_DUNGEON_SEED ^ 0xE8A4_31D2);
+    let candidates = ["spawner_block", "warp_block", "loot_block"];
+    let mut defs: Vec<&StructureDef> = Vec::new();
+    for id in candidates {
+        if let Some(def) = find_structure(structures, id) {
+            defs.push(def);
+        }
+    }
+    if defs.is_empty() || rooms.is_empty() {
+        return;
+    }
+
+    let uncommon_cap = ((rooms.len() as f32 * 0.06).round() as usize).max(1);
+    let target = (1 + rng.usize(5)).min(uncommon_cap).min(5);
+    let mut placed = 0usize;
+    let mut room_order: Vec<usize> = (0..rooms.len()).collect();
+    for i in 0..room_order.len() {
+        let j = rng.usize(room_order.len());
+        room_order.swap(i, j);
+    }
+
+    for room_idx in room_order {
+        if placed >= target {
+            break;
+        }
+        let room = rooms[room_idx];
+        if room.w < 5 || room.h < 5 {
+            continue;
+        }
+        if rng.usize(100) >= 22 {
+            continue;
+        }
+
+        let Some(interior) = room_interior(room, 1) else {
+            continue;
+        };
+        let def = defs[rng.usize(defs.len())];
+        let sw = def.structure.width();
+        let sh = def.structure.height();
+        if sw == 0 || sh == 0 || sw > interior.w || sh > interior.h {
+            continue;
+        }
+        let max_x = interior.x + interior.w - sw;
+        let max_y = interior.y + interior.h - sh;
+        let mut room_placed = false;
+        for _ in 0..8 {
+            let x = interior.x + rng.usize(max_x - interior.x + 1);
+            let y = interior.y + rng.usize(max_y - interior.y + 1);
+            let rect = TileRect { x, y, w: sw, h: sh };
+            if structure_footprint_blocked(map, rect) {
+                continue;
+            }
+            map.place_structure_def(def, x, y);
+            placed += 1;
+            room_placed = true;
+            break;
+        }
+        if !room_placed {
+            continue;
+        }
+    }
+
+    if placed > 0 {
+        return;
+    }
+
+    // Guarantee at least one block if any room can fit one.
+    for room in rooms.iter().copied() {
+        let Some(interior) = room_interior(room, 1) else {
+            continue;
+        };
+        for def in &defs {
+            let sw = def.structure.width();
+            let sh = def.structure.height();
+            if sw == 0 || sh == 0 || sw > interior.w || sh > interior.h {
+                continue;
+            }
+            let x = interior.x + (interior.w - sw) / 2;
+            let y = interior.y + (interior.h - sh) / 2;
+            let rect = TileRect { x, y, w: sw, h: sh };
+            if structure_footprint_blocked(map, rect) {
+                continue;
+            }
+            map.place_structure_def(def, x, y);
+            return;
+        }
+    }
+}
+
+fn room_interior(room: TileRect, inset: usize) -> Option<TileRect> {
+    if room.w <= inset * 2 || room.h <= inset * 2 {
+        return None;
+    }
+    Some(TileRect {
+        x: room.x + inset,
+        y: room.y + inset,
+        w: room.w - inset * 2,
+        h: room.h - inset * 2,
+    })
 }
 
 pub fn scene_farm(
@@ -298,27 +401,70 @@ fn generate_expedition_dungeon(map: &mut TileMap) -> DungeonLayout {
 }
 
 fn apply_dungeon_hpa_topology(map: &mut TileMap, layout: &DungeonLayout) {
-    let len = map.width() * map.height();
+    let _ = layout;
+    const NODE_SIZE: usize = 5;
+    let w = map.width();
+    let h = map.height();
+    let len = w * h;
     let mut room_ids = vec![-1i16; len];
-    let mut centers = Vec::with_capacity(layout.rooms.len());
-    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); layout.rooms.len()];
-    for (room_idx, room) in layout.rooms.iter().enumerate() {
-        for y in room.y..room.max_y() {
-            for x in room.x..room.max_x() {
-                room_ids[y * map.width() + x] = room_idx as i16;
+    let mut centers = Vec::new();
+    let mut node_lookup: Vec<Option<usize>> = vec![None; len];
+
+    for y0 in (0..h).step_by(NODE_SIZE) {
+        for x0 in (0..w).step_by(NODE_SIZE) {
+            let x1 = (x0 + NODE_SIZE).min(w);
+            let y1 = (y0 + NODE_SIZE).min(h);
+            let mut tiles = Vec::new();
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    if map.tile_at(LayerKind::Background, x, y) == EXPEDITION_FLOOR_TILE
+                        && !map.is_solid(x, y)
+                    {
+                        tiles.push((x, y));
+                    }
+                }
+            }
+            if tiles.is_empty() {
+                continue;
+            }
+
+            let room_idx = centers.len();
+            let (cx, cy) = tiles[tiles.len() / 2];
+            centers.push(crate::map::GridIndex {
+                x: cx as i32,
+                y: cy as i32,
+            });
+            for (x, y) in tiles {
+                let idx = y * w + x;
+                room_ids[idx] = room_idx as i16;
+                node_lookup[idx] = Some(room_idx);
             }
         }
-        let cx = room.x + room.w / 2;
-        let cy = room.y + room.h / 2;
-        centers.push(crate::map::GridIndex {
-            x: cx as i32,
-            y: cy as i32,
-        });
     }
-    for &(a, b) in &layout.edges {
-        if a < adjacency.len() && b < adjacency.len() {
-            adjacency[a].push(b);
-            adjacency[b].push(a);
+
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); centers.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            let Some(a) = node_lookup[idx] else {
+                continue;
+            };
+            if x + 1 < w {
+                if let Some(b) = node_lookup[y * w + (x + 1)] {
+                    if a != b {
+                        adjacency[a].push(b);
+                        adjacency[b].push(a);
+                    }
+                }
+            }
+            if y + 1 < h {
+                if let Some(b) = node_lookup[(y + 1) * w + x] {
+                    if a != b {
+                        adjacency[a].push(b);
+                        adjacency[b].push(a);
+                    }
+                }
+            }
         }
     }
     for neighbors in &mut adjacency {
@@ -518,6 +664,7 @@ fn neighbors_expedition_floor(map: &TileMap, x: usize, y: usize) -> bool {
 }
 
 fn spawn_expedition_entities(
+    map: &TileMap,
     entities: &mut Vec<Entity>,
     db: &EntityDatabase,
     registry: &MovementRegistry,
@@ -542,11 +689,17 @@ fn spawn_expedition_entities(
             count: 2,
             min_spacing_tiles: 2.0,
         },
+        SpawnRule {
+            entity_id: "cropbot",
+            count: 1,
+            min_spacing_tiles: 3.0,
+        },
     ];
-    spawn_entities_with_rules(entities, db, registry, &areas, &rules, tile_size, &mut rng);
+    spawn_entities_with_rules(map, entities, db, registry, &areas, &rules, tile_size, &mut rng);
 }
 
 fn spawn_entities_with_rules(
+    map: &TileMap,
     entities: &mut Vec<Entity>,
     db: &EntityDatabase,
     registry: &MovementRegistry,
@@ -574,6 +727,9 @@ fn spawn_entities_with_rules(
             }
             let x = area.x0 + rng.usize(area.x1 - area.x0);
             let y = area.y0 + rng.usize(area.y1 - area.y0);
+            if map.is_solid(x, y) {
+                continue;
+            }
             let pos = vec2((x as f32 + 0.5) * tile_size, (y as f32 + 0.5) * tile_size);
             if min_sq > 0.0
                 && taken_positions

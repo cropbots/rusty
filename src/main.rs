@@ -6,13 +6,16 @@ use std::future::poll_fn;
 use std::task::Poll;
 
 mod entity;
+mod farm;
 mod helpers;
 mod interact;
 mod inventory;
+mod item;
 mod map;
 mod notebook;
 mod particle;
 mod player;
+mod loot;
 mod scene;
 mod sound;
 mod tilemap;
@@ -28,7 +31,9 @@ use map::{TileMap, TileSet, load_structures_from_dir};
 use player::Player;
 
 use interact::{InteractContext, InteractRegistry};
-use inventory::{InventoryCatalog, StackInventory};
+use inventory::StackInventory;
+use item::{InventoryCatalog, ItemId, draw_item_icon};
+use loot::LootTables;
 use particle::ParticleSystem;
 use scene::SceneKind;
 use sound::SoundSystem;
@@ -43,6 +48,18 @@ const LOADING_SPIN_SPEED: f32 = 3.0;
 const CHUNK_ALLOC_PER_FRAME: usize = 6;
 const CHUNK_REBUILD_PER_FRAME: usize = 8;
 const SCENE_WARM_BUDGET_S: f32 = 0.006;
+
+#[derive(Default)]
+struct BlockRuntimeState {
+    spawners: HashMap<String, SpawnerRuntime>,
+    open_loot: Option<StackInventory>,
+}
+
+#[derive(Clone, Copy)]
+struct SpawnerRuntime {
+    remaining: u32,
+    cooldown: f32,
+}
 
 fn window_conf() -> Conf {
     let icon = load_window_icon(&helpers::asset_path("src/assets/favicon.png"));
@@ -243,7 +260,22 @@ async fn main() {
         InventoryCatalog::new()
     });
     let mut inventory = StackInventory::seed_demo(&inventory_catalog);
+    let loot_tables = await_with_loading(
+        LootTables::load_from("src/loot"),
+        &loading,
+        "Loading loot",
+        0.76,
+        &mut loading_spin,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("loot table load failed: {err}");
+        LootTables::empty()
+    });
     let chopbot_summon_item = inventory_catalog.id_by_key("chopbot_summon");
+    let cropbot_summon_item = inventory_catalog.id_by_key("cropbot_summon");
+    let virat_summon_item = inventory_catalog.id_by_key("virat_summon");
+    let virabird_summon_item = inventory_catalog.id_by_key("virabird_summon");
 
     // Camera
     let mut camera = Camera2D {
@@ -297,6 +329,7 @@ async fn main() {
         CHUNK_REBUILD_PER_FRAME,
     );
     player.set_position(scene::expedition_spawn_point());
+    player.clamp_to_map(&maps);
     let mut current_scene = SceneKind::Expedition;
 
     let mut draw_order: Vec<usize> = Vec::new();
@@ -340,7 +373,9 @@ async fn main() {
     let mut entity_target_cache: HashMap<(u64, u8), Option<entity::EntityTarget>> = HashMap::new();
     let mut player_dead = false;
     let interact_registry = InteractRegistry::new();
+    let mut block_state = BlockRuntimeState::default();
     let mut notebook = ProgrammingNotebook::new();
+    let mut selected_cropbot_uid: Option<u64> = None;
 
     loop {
         let dt = get_frame_time();
@@ -374,6 +409,7 @@ async fn main() {
                 CHUNK_REBUILD_PER_FRAME,
             );
             player.set_position(scene::expedition_spawn_point());
+            player.clamp_to_map(&maps);
             camera.target = player.position();
             entity_target_cache.clear();
             damage_events.clear();
@@ -395,6 +431,7 @@ async fn main() {
                 CHUNK_REBUILD_PER_FRAME,
             );
             player.set_position(scene::farm_spawn_point(&maps));
+            player.clamp_to_map(&maps);
             camera.target = player.position();
             entity_target_cache.clear();
             damage_events.clear();
@@ -444,7 +481,11 @@ async fn main() {
         let mouse_screen_vec = vec2(mouse_screen.0, mouse_screen.1);
         notebook.handle_input();
         let ui_captures_pointer = notebook.captures_pointer()
-            || inventory.captures_pointer(mouse_screen_vec, &inventory_catalog);
+            || inventory.captures_pointer(mouse_screen_vec, &inventory_catalog)
+            || block_state
+                .open_loot
+                .as_ref()
+                .is_some_and(|_| loot_ui_bounds().contains(mouse_screen_vec));
         if !notebook.open {
             inventory.handle_input(&inventory_catalog);
         }
@@ -462,9 +503,42 @@ async fn main() {
             })
             .cloned();
 
-        let mut summon_preview: Option<(Rect, bool)> = None;
-        if current_scene == SceneKind::Expedition
-            && inventory.selected_item() == chopbot_summon_item
+        run_spawner_blocks(
+            &maps,
+            &mut entities,
+            &db,
+            &registry,
+            &mut block_state.spawners,
+            dt,
+        );
+
+        let mut summon_preview: Option<(Rect, bool, &'static str)> = None;
+        let mut hovered_cropbot_uid: Option<u64> = None;
+        for ent in &entities {
+            if db.entities[ent.instance.def].id == "cropbot" {
+                let hb = ent.hitbox(&db);
+                if hb.contains(mouse_world) {
+                    hovered_cropbot_uid = Some(ent.instance.uid);
+                    break;
+                }
+            }
+        }
+
+        let selected_item = inventory.selected_item();
+        let summon_kind: Option<&'static str> = if selected_item == chopbot_summon_item {
+            Some("chopbot")
+        } else if selected_item == cropbot_summon_item {
+            Some("cropbot")
+        } else if selected_item == virat_summon_item {
+            Some("virat")
+        } else if selected_item == virabird_summon_item {
+            Some("virabird")
+        } else {
+            None
+        };
+
+        if (current_scene == SceneKind::Expedition || current_scene == SceneKind::Farm)
+            && summon_kind.is_some()
             && !notebook.open
         {
             if let Some(grid) = maps.grid_index(mouse_world) {
@@ -476,8 +550,11 @@ async fn main() {
                     let gx = grid.x as usize;
                     let gy = grid.y as usize;
                     let tile_rect = maps.tile_bounds(gx, gy);
-                    let floor_ok = maps.tile_at(map::LayerKind::Background, gx, gy)
-                        == scene::EXPEDITION_FLOOR_TILE;
+                    let bg_tile = maps.tile_at(map::LayerKind::Background, gx, gy);
+                    let floor_ok = match current_scene {
+                        SceneKind::Expedition => bg_tile == scene::EXPEDITION_FLOOR_TILE,
+                        SceneKind::Farm => bg_tile == grass,
+                    };
                     let solid_block = maps.is_solid(gx, gy);
                     let center = vec2(
                         tile_rect.x + tile_rect.w * 0.5,
@@ -488,13 +565,29 @@ async fn main() {
                         hb.contains(center) || hb.overlaps(&tile_rect)
                     });
                     let valid = floor_ok && !solid_block && !occupied_by_entity;
-                    summon_preview = Some((tile_rect, valid));
+                    summon_preview = Some((tile_rect, valid, summon_kind.unwrap_or("chopbot")));
                 }
             }
         }
 
         if is_mouse_button_pressed(MouseButton::Left) && !ui_captures_pointer {
-            if let Some(interactor) = hovered_interactor.as_ref() {
+            if let Some((rect, valid, summon_entity_id)) = summon_preview {
+                if valid && inventory.consume_selected_one().is_some() {
+                    let spawn_pos = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
+                    if let Some(mut entity) = Entity::spawn(&db, summon_entity_id, spawn_pos, &registry) {
+                        // If we are summoning an "enemy" type, make it friendly to the player
+                        // and target actual enemies instead.
+                        if summon_entity_id == "virat" || summon_entity_id == "virabird" {
+                            entity.instance.flags &= !entity::DEF_FLAG_TARGET_PLAYER;
+                            entity.instance.flags |= entity::DEF_FLAG_TARGET_NEAREST_ENEMY;
+                        }
+                        entity.clamp_to_map(&maps, &db);
+                        entities.push(entity);
+                    }
+                }
+            } else if let Some(uid) = hovered_cropbot_uid {
+                selected_cropbot_uid = Some(uid);
+            } else if let Some(interactor) = hovered_interactor.as_ref() {
                 let mut ctx = InteractContext {
                     structure_id: &interactor.structure_id,
                     area: interactor.group_rect,
@@ -502,16 +595,35 @@ async fn main() {
                     map: &mut maps,
                 };
                 interact_registry.execute(&interactor.on_interact, &mut ctx);
-            }
-        }
-        if is_mouse_button_pressed(MouseButton::Right) && !ui_captures_pointer {
-            if let Some((rect, valid)) = summon_preview {
-                if valid && inventory.consume_selected_one().is_some() {
-                    let spawn_pos = vec2(rect.x + rect.w * 0.5, rect.y + rect.h * 0.5);
-                    if let Some(entity) = Entity::spawn(&db, "chopbot", spawn_pos, &registry) {
-                        entities.push(entity);
+                for command in &interactor.on_interact {
+                    if let Some(scene_kind) = parse_warp_command(command) {
+                        current_scene = apply_scene_warp(
+                            scene_kind,
+                            current_scene,
+                            &mut maps,
+                            &mut entities,
+                            &db,
+                            &registry,
+                            &structures,
+                            grass,
+                            &tileset,
+                            &mut player,
+                            &loading,
+                            &mut loading_spin,
+                        )
+                        .await;
+                    } else if let Some(table_id) = command.strip_prefix("loot:") {
+                        block_state.open_loot =
+                            build_loot_inventory(table_id, &loot_tables, &inventory_catalog);
                     }
                 }
+            }
+        }
+
+        if let Some(loot_inventory) = block_state.open_loot.as_mut() {
+            handle_loot_ui_input(loot_inventory, &mut inventory, &inventory_catalog);
+            if is_key_pressed(KeyCode::Escape) {
+                block_state.open_loot = None;
             }
         }
 
@@ -552,6 +664,9 @@ async fn main() {
             ent_idx += 1;
         }
         resolve_entity_overlaps(&mut entities, &db, &maps);
+        for ent in entities.iter_mut() {
+            ent.clamp_to_map(&maps, &db);
+        }
         damage_events.extend(ctx.damage_events.drain(..));
         entity_target_cache = std::mem::take(&mut ctx.target_cache);
 
@@ -608,6 +723,11 @@ async fn main() {
             }
         }
         entities.retain(|ent| ent.instance.hp > 0.0);
+        if let Some(uid) = selected_cropbot_uid {
+            if !entities.iter().any(|ent| ent.instance.uid == uid) {
+                selected_cropbot_uid = None;
+            }
+        }
         if !player_dead && player.hp() <= 0.0 {
             player_dead = true;
         }
@@ -697,6 +817,13 @@ async fn main() {
             }
         }
 
+        if let Some(uid) = hovered_cropbot_uid {
+            if let Some(ent) = entities.iter().find(|e| e.instance.uid == uid) {
+                let hb = ent.hitbox(&db);
+                draw_rectangle_lines(hb.x, hb.y, hb.w, hb.h, 2.0, YELLOW);
+            }
+        }
+
         maps.draw_overlay(
             &tileset,
             camera.target,
@@ -723,7 +850,7 @@ async fn main() {
             );
         }
 
-        if let Some((rect, valid)) = summon_preview {
+        if let Some((rect, valid, _)) = summon_preview {
             let color = if valid {
                 Color::new(1.0, 0.95, 0.2, 0.30)
             } else {
@@ -761,6 +888,14 @@ async fn main() {
             &heart_empty,
         );
         inventory.draw(&inventory_catalog, &tileset, &hotbar_slot);
+        if let Some(loot_inventory) = block_state.open_loot.as_ref() {
+            draw_loot_ui(loot_inventory, &inventory, &inventory_catalog);
+        }
+        if let Some(uid) = selected_cropbot_uid {
+            if let Some(ent) = entities.iter().find(|e| e.instance.uid == uid) {
+                draw_cropbot_panel(ent, &db, &inventory_catalog, &tileset);
+            }
+        }
         notebook.draw();
         egui_macroquad::draw();
 
@@ -779,6 +914,62 @@ async fn main() {
 
         next_frame().await;
     }
+}
+
+fn loot_ui_bounds() -> Rect {
+    let w = (screen_width() * 0.72).clamp(480.0, 940.0);
+    let h = (screen_height() * 0.62).clamp(340.0, 620.0);
+    Rect::new((screen_width() - w) * 0.5, (screen_height() - h) * 0.5, w, h)
+}
+
+fn draw_loot_ui(loot: &StackInventory, player_inv: &StackInventory, catalog: &InventoryCatalog) {
+    let bounds = loot_ui_bounds();
+    draw_rectangle(bounds.x, bounds.y, bounds.w, bounds.h, Color::new(0.05, 0.05, 0.08, 0.94));
+    draw_rectangle_lines(bounds.x, bounds.y, bounds.w, bounds.h, 2.0, WHITE);
+    draw_text("Loot", bounds.x + 18.0, bounds.y + 28.0, 24.0, WHITE);
+    draw_text("Player", bounds.x + bounds.w * 0.5 + 18.0, bounds.y + 28.0, 24.0, WHITE);
+    draw_inventory_list(loot, catalog, Rect::new(bounds.x + 12.0, bounds.y + 40.0, bounds.w * 0.5 - 18.0, bounds.h - 52.0));
+    draw_inventory_list(player_inv, catalog, Rect::new(bounds.x + bounds.w * 0.5 + 6.0, bounds.y + 40.0, bounds.w * 0.5 - 18.0, bounds.h - 52.0));
+}
+
+fn draw_inventory_list(inv: &StackInventory, catalog: &InventoryCatalog, rect: Rect) {
+    let mut y = rect.y + 10.0;
+    for (item, amount) in inv.items().into_iter().take(16) {
+        let def = catalog.get(item);
+        draw_text(&format!("{} x{}", def.short_name, amount), rect.x + 8.0, y, 20.0, WHITE);
+        y += 22.0;
+    }
+}
+
+fn handle_loot_ui_input(
+    loot: &mut StackInventory,
+    player_inv: &mut StackInventory,
+    catalog: &InventoryCatalog,
+) {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return;
+    }
+    let mouse = vec2(mouse_position().0, mouse_position().1);
+    let bounds = loot_ui_bounds();
+    let left = Rect::new(bounds.x + 12.0, bounds.y + 40.0, bounds.w * 0.5 - 18.0, bounds.h - 52.0);
+    let right = Rect::new(bounds.x + bounds.w * 0.5 + 6.0, bounds.y + 40.0, bounds.w * 0.5 - 18.0, bounds.h - 52.0);
+    if left.contains(mouse) {
+        if let Some(item) = row_item_at(loot, left, mouse, catalog) {
+            let _ = loot.transfer_one_to(player_inv, item);
+        }
+    } else if right.contains(mouse) {
+        if let Some(item) = row_item_at(player_inv, right, mouse, catalog) {
+            let _ = player_inv.transfer_one_to(loot, item);
+        }
+    }
+}
+
+fn row_item_at(inv: &StackInventory, rect: Rect, mouse: Vec2, _catalog: &InventoryCatalog) -> Option<ItemId> {
+    let row = ((mouse.y - (rect.y + 10.0)) / 22.0).floor() as i32;
+    if row < 0 {
+        return None;
+    }
+    inv.items().get(row as usize).map(|(item, _)| *item)
 }
 
 fn camera_zoom_for_fov(view_height: f32, render_target: bool) -> Vec2 {
@@ -864,6 +1055,150 @@ fn interactor_in_range(player_pos: Vec2, area: Rect, range_world: f32) -> bool {
         player_pos.y.clamp(area.y, area.y + area.h),
     );
     player_pos.distance(nearest) <= range_world
+}
+
+fn parse_warp_command(command: &str) -> Option<SceneKind> {
+    let target = command.strip_prefix("warp:")?;
+    match target {
+        "farm" => Some(SceneKind::Farm),
+        "expedition" => Some(SceneKind::Expedition),
+        _ => None,
+    }
+}
+
+async fn apply_scene_warp(
+    target: SceneKind,
+    current_scene: SceneKind,
+    maps: &mut TileMap,
+    entities: &mut Vec<Entity>,
+    db: &EntityDatabase,
+    registry: &MovementRegistry,
+    structures: &[map::StructureDef],
+    grass: u8,
+    tileset: &TileSet,
+    player: &mut Player,
+    loading: &Texture2D,
+    loading_spin: &mut f32,
+) -> SceneKind {
+    if target == current_scene {
+        return current_scene;
+    }
+    match target {
+        SceneKind::Expedition => {
+            scene::scene_expedition(
+                maps,
+                entities,
+                db,
+                registry,
+                structures,
+                grass,
+                TILE_SIZE,
+                CHUNK_ALLOC_PER_FRAME,
+                CHUNK_REBUILD_PER_FRAME,
+            );
+            player.set_position(scene::expedition_spawn_point());
+            player.clamp_to_map(maps);
+            SceneKind::Expedition
+        }
+        SceneKind::Farm => {
+            scene::scene_farm(
+                maps,
+                entities,
+                structures,
+                grass,
+                TILE_SIZE,
+                CHUNK_ALLOC_PER_FRAME,
+                CHUNK_REBUILD_PER_FRAME,
+            );
+            player.set_position(scene::farm_spawn_point(maps));
+            player.clamp_to_map(maps);
+            warm_scene_chunks_loading(
+                maps,
+                tileset,
+                loading,
+                "Loading Farm",
+                loading_spin,
+            )
+            .await;
+            SceneKind::Farm
+        }
+    }
+}
+
+fn build_loot_inventory(
+    table_id: &str,
+    tables: &LootTables,
+    catalog: &InventoryCatalog,
+) -> Option<StackInventory> {
+    let mut inv = StackInventory::new();
+    let entries = tables.get(table_id)?;
+    for entry in entries {
+        if let Some(item_id) = catalog.id_by_key(&entry.item) {
+            inv.add(item_id, entry.amount.max(1));
+        }
+    }
+    Some(inv)
+}
+
+fn run_spawner_blocks(
+    map: &TileMap,
+    entities: &mut Vec<Entity>,
+    db: &EntityDatabase,
+    registry: &MovementRegistry,
+    states: &mut HashMap<String, SpawnerRuntime>,
+    dt: f32,
+) {
+    for interactor in map.structure_interactors() {
+        for cmd in &interactor.on_interact {
+            let Some(spec) = cmd.strip_prefix("spawner:") else {
+                continue;
+            };
+            let parts: Vec<&str> = spec.split(':').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let interval = parts[0].parse::<f32>().ok().unwrap_or(2.0).max(0.05);
+            let total = parts[1].parse::<u32>().ok().unwrap_or(1);
+            let candidates: Vec<&str> = parts[2].split(',').filter(|v| !v.is_empty()).collect();
+            if candidates.is_empty() || total == 0 {
+                continue;
+            }
+            let key = format!("{}:{:.0}:{:.0}", interactor.structure_id, interactor.group_rect.x, interactor.group_rect.y);
+            let state = states.entry(key).or_insert(SpawnerRuntime {
+                remaining: total,
+                cooldown: interval,
+            });
+            if state.remaining == 0 {
+                continue;
+            }
+            state.cooldown -= dt;
+            if state.cooldown > 0.0 {
+                continue;
+            }
+            state.cooldown = interval;
+            let pick_idx = macroquad::rand::gen_range(0usize, candidates.len());
+            let entity_id = candidates[pick_idx];
+            let spawn_pos = vec2(
+                interactor.group_rect.x + interactor.group_rect.w * 0.5,
+                interactor.group_rect.y + interactor.group_rect.h * 0.5,
+            );
+            if let Some(grid) = map.grid_index(spawn_pos) {
+                let gx = grid.x.max(0) as usize;
+                let gy = grid.y.max(0) as usize;
+                if gx < map.width()
+                    && gy < map.height()
+                    && !map.is_solid(gx, gy)
+                    && map.tile_at(map::LayerKind::Background, gx, gy) == scene::EXPEDITION_FLOOR_TILE
+                {
+                    if let Some(mut entity) = Entity::spawn(db, entity_id, spawn_pos, registry) {
+                        entity.clamp_to_map(map, db);
+                        entities.push(entity);
+                        state.remaining -= 1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &TileMap) {
@@ -1015,6 +1350,74 @@ fn resolve_entity_overlaps(entities: &mut [Entity], db: &EntityDatabase, map: &T
             entities[i].clamp_to_map(map, db);
         }
     }
+}
+
+fn draw_cropbot_panel(
+    ent: &Entity,
+    db: &EntityDatabase,
+    catalog: &InventoryCatalog,
+    tileset: &TileSet,
+) {
+    let panel_w = 420.0;
+    let panel_h = 220.0;
+    let x = (screen_width() - panel_w) * 0.5;
+    let y = screen_height() - panel_h - 24.0;
+    draw_rectangle(x, y, panel_w, panel_h, Color::new(0.08, 0.08, 0.1, 0.92));
+    draw_rectangle_lines(x, y, panel_w, panel_h, 2.0, Color::new(0.9, 0.9, 0.9, 0.9));
+    draw_text("Cropbot", x + 14.0, y + 24.0, 24.0, YELLOW);
+
+    let crop_def = &db.entities[ent.instance.def];
+    let icon_rect = Rect::new(x + 24.0, y + 38.0, 56.0, 56.0);
+    draw_texture_ex(
+        &crop_def.texture.texture,
+        icon_rect.x,
+        icon_rect.y,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(icon_rect.w, icon_rect.h)),
+            ..Default::default()
+        },
+    );
+
+    let slot_y = y + panel_h - 74.0;
+    for i in 0..3 {
+        let sx = x + 18.0 + i as f32 * 64.0;
+        draw_rectangle(sx, slot_y, 52.0, 52.0, Color::new(0.2, 0.2, 0.24, 1.0));
+        draw_rectangle_lines(
+            sx,
+            slot_y,
+            52.0,
+            52.0,
+            2.0,
+            Color::new(0.95, 0.95, 0.8, 0.9),
+        );
+        let slot_item = match i {
+            0 => ent.instance.cropbot_slots.seed,
+            1 => ent.instance.cropbot_slots.bonemeal,
+            _ => ent.instance.cropbot_slots.tool,
+        };
+        if let Some(raw) = slot_item {
+            let idx = ItemId(raw as usize % catalog.iter_ids().count().max(1));
+            let def = catalog.get(idx);
+            draw_item_icon(def, tileset, Rect::new(sx + 6.0, slot_y + 6.0, 40.0, 40.0));
+        }
+    }
+
+    let right_x = x + panel_w * 0.52;
+    draw_text(
+        "Player Inventory",
+        right_x,
+        y + 24.0,
+        22.0,
+        Color::from_hex(0xCDE9FF),
+    );
+    draw_text(
+        "Use wheel / hotbar on right side of HUD",
+        right_x,
+        y + 52.0,
+        18.0,
+        Color::from_hex(0xAFC6D9),
+    );
 }
 
 fn rect_cell_range(rect: Rect, cell_size: f32) -> (i32, i32, i32, i32) {

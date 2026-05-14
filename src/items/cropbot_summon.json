@@ -1,0 +1,11 @@
+{
+  "id": "cropbot_summon",
+  "name": "Cropbot Summon",
+  "short_name": "Cropbot",
+  "category": "utility",
+  "icon": {
+    "type": "texture",
+    "path": "src/assets/items/gear.png"
+  },
+  "accent": "#E3C84D"
+}

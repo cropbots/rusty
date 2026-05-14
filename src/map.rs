@@ -2141,7 +2141,18 @@ pub async fn load_structures_from_dir(
 
     if cfg!(target_arch = "wasm32") {
         let dir = data_path(&dir.as_ref().to_string_lossy());
-        let files = load_wasm_manifest_files(&dir, &["tree_plains.json", "bush_plains.json"]).await;
+        let files = load_wasm_manifest_files(
+            &dir,
+            &[
+                "tree_plains.json",
+                "bush_plains.json",
+                "sign.json",
+                "spawner_block.json",
+                "warp_block.json",
+                "loot_block.json",
+            ],
+        )
+        .await;
         for file in files {
             let path = format!("{}/{}", dir, file);
             let raw_str = load_string(&path)

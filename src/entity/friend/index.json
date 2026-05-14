@@ -1,5 +1,6 @@
 {
   "files": [
-    "chopbot.yaml"
+    "chopbot.yaml",
+    "cropbot.yaml"
   ]
 }

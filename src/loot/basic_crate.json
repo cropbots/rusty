@@ -1,0 +1,9 @@
+{
+  "id": "basic_crate",
+  "entries": [
+    { "item": "chopbot_summon", "amount": 1 },
+    { "item": "cropbot_summon", "amount": 1 },
+    { "item": "virat_summon", "amount": 1 },
+    { "item": "virabird_summon", "amount": 1 }
+  ]
+}
