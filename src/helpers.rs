@@ -71,6 +71,7 @@ struct WasmIndexFile {
 }
 
 pub async fn load_wasm_manifest_files(dir: &str, fallback: &[&str]) -> Vec<String> {
+    let dir = data_path(dir);
     let index_path = format!("{}/index.json", dir.trim_end_matches('/'));
     if let Ok(raw) = load_string(&index_path).await {
         if let Ok(parsed) = serde_json::from_str::<WasmIndexFile>(&raw) {

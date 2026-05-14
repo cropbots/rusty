@@ -10,7 +10,16 @@ WASM_DEST="${ROOT_DIR}/web/${CRATE_NAME}.wasm"
 ASSETS_SOURCE="${ROOT_DIR}/src/assets"
 ASSETS_DEST="${ROOT_DIR}/web/assets"
 
-cargo build \
+CARGO_BIN="${CARGO_BIN:-$(command -v cargo 2>/dev/null || true)}"
+if [ -z "${CARGO_BIN}" ]; then
+  CARGO_BIN="${HOME}/.cargo/bin/cargo"
+fi
+if [ ! -x "${CARGO_BIN}" ]; then
+  echo "cargo not found; install Rust or set CARGO_BIN to your cargo executable." >&2
+  exit 1
+fi
+
+"${CARGO_BIN}" build \
   --release \
   --target "${TARGET_TRIPLE}" \
   --manifest-path "${ROOT_DIR}/Cargo.toml"

@@ -1,0 +1,11 @@
+{
+  "id": "chopbot_summon",
+  "name": "Chopbot Summon",
+  "short_name": "Chopbot",
+  "category": "utility",
+  "icon": {
+    "type": "texture",
+    "path": "src/assets/objects/chopbot.png"
+  },
+  "accent": "#F2D14B"
+}
