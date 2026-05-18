@@ -4,7 +4,7 @@
   "tile_height": 16,
   "columns": 16,
   "rows": 15,
-  "tile_count": 227,
+  "tile_count": 228,
   "tiles": [
     {
       "id": 0,
@@ -1591,6 +1591,13 @@
     {
       "id": 226,
       "x": 32,
+      "y": 224,
+      "width": 16,
+      "height": 16
+    },
+    {
+      "id": 227,
+      "x": 48,
       "y": 224,
       "width": 16,
       "height": 16

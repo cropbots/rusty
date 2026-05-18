@@ -4,11 +4,19 @@ use macroquad::prelude::*;
 
 use crate::{map::TileMap, player::Player};
 
+#[derive(Clone)]
+pub enum InteractAction {
+    Warp { target: String },
+    OpenLoot { table_id: String },
+    OpenLockPuzzle { puzzle_id: String, area: Rect },
+}
+
 pub struct InteractContext<'a> {
     pub structure_id: &'a str,
     pub area: Rect,
     pub player: &'a mut Player,
     pub map: &'a mut TileMap,
+    pub actions: &'a mut Vec<InteractAction>,
 }
 
 pub type InteractFn = fn(&mut InteractContext<'_>);
@@ -36,6 +44,8 @@ impl InteractRegistry {
         for name in names {
             if let Some(func) = self.funcs.get(name).copied() {
                 func(ctx);
+            } else if handle_block_action(name, ctx) {
+                continue;
             } else {
                 eprintln!(
                     "unknown structure interact function '{}' on '{}'",
@@ -44,6 +54,29 @@ impl InteractRegistry {
             }
         }
     }
+}
+
+fn handle_block_action(name: &str, ctx: &mut InteractContext<'_>) -> bool {
+    if let Some(target) = name.strip_prefix("warp:") {
+        ctx.actions.push(InteractAction::Warp {
+            target: target.to_string(),
+        });
+        return true;
+    }
+    if let Some(table_id) = name.strip_prefix("loot:") {
+        ctx.actions.push(InteractAction::OpenLoot {
+            table_id: table_id.to_string(),
+        });
+        return true;
+    }
+    if let Some(puzzle_id) = name.strip_prefix("lock_puzzle:") {
+        ctx.actions.push(InteractAction::OpenLockPuzzle {
+            puzzle_id: puzzle_id.to_string(),
+            area: ctx.area,
+        });
+        return true;
+    }
+    false
 }
 
 fn interact_log(ctx: &mut InteractContext<'_>) {

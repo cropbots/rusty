@@ -297,6 +297,19 @@ impl Structure {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SpawnerDef {
+    pub interval: f32,
+    pub total: u32,
+    pub entities: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct PlacedSpawner {
+    pub def: SpawnerDef,
+    pub rect: Rect,
+}
+
 #[derive(Clone)]
 pub struct StructureDef {
     pub id: String,
@@ -306,6 +319,8 @@ pub struct StructureDef {
     pub frequency: f32,
     pub max_per_map: usize,
     pub min_distance: f32,
+    pub spawner: Option<SpawnerDef>,
+    pub player_buildable: bool,
 }
 
 #[derive(Clone)]
@@ -579,6 +594,7 @@ pub struct TileMap {
     custom_border_hitbox: Option<Rect>,
     hpa_room_ids: Vec<i16>,
     hpa_rooms: Vec<HpaRoom>,
+    placed_spawners: Vec<PlacedSpawner>,
 }
 
 impl TileMap {
@@ -670,6 +686,7 @@ impl TileMap {
             custom_border_hitbox: None,
             hpa_room_ids: vec![-1; len],
             hpa_rooms: Vec::new(),
+            placed_spawners: Vec::new(),
         }
     }
 
@@ -722,6 +739,7 @@ impl TileMap {
             custom_border_hitbox: None,
             hpa_room_ids: vec![-1; len],
             hpa_rooms: Vec::new(),
+            placed_spawners: Vec::new(),
         }
     }
 
@@ -1039,6 +1057,7 @@ impl TileMap {
     pub fn place_structure_def(&mut self, def: &StructureDef, x: usize, y: usize) {
         self.place_structure(&def.structure, x, y);
         self.register_structure_interactors(def, x, y);
+        self.register_structure_spawner(def, x, y);
     }
 
     fn place_structure_unchecked(&mut self, structure: &Structure, x: usize, y: usize) {
@@ -1095,6 +1114,7 @@ impl TileMap {
 
     pub fn apply_structures(&mut self, defs: &[StructureDef], seed: u32) {
         self.structure_interactors.clear();
+        self.placed_spawners.clear();
         let mut occupied = vec![false; self.width * self.height];
         let mut placed_rects: Vec<Rect> = Vec::new();
 
@@ -1183,6 +1203,7 @@ impl TileMap {
 
                 self.place_structure_unchecked(&def.structure, x, y);
                 self.register_structure_interactors(def, x, y);
+                self.register_structure_spawner(def, x, y);
                 for &(sx, sy) in def.structure.occupied_offsets.iter() {
                     let idx = self.idx(x + sx, y + sy);
                     occupied[idx] = true;
@@ -1215,17 +1236,21 @@ impl TileMap {
             let half_w = tile_size * 0.5;
             let half_h = tile_size * 0.5;
 
-            if (mask & 0b0001) != 0 {
-                rects.push(Rect::new(tile_x, tile_y, half_w, half_h));
-            }
-            if (mask & 0b0010) != 0 {
-                rects.push(Rect::new(tile_x + half_w, tile_y, half_w, half_h));
-            }
-            if (mask & 0b0100) != 0 {
-                rects.push(Rect::new(tile_x, tile_y + half_h, half_w, half_h));
-            }
-            if (mask & 0b1000) != 0 {
-                rects.push(Rect::new(tile_x + half_w, tile_y + half_h, half_w, half_h));
+            if mask == 0b1111 {
+                rects.push(Rect::new(tile_x, tile_y, tile_size, tile_size));
+            } else {
+                if (mask & 0b0001) != 0 {
+                    rects.push(Rect::new(tile_x, tile_y, half_w, half_h));
+                }
+                if (mask & 0b0010) != 0 {
+                    rects.push(Rect::new(tile_x + half_w, tile_y, half_w, half_h));
+                }
+                if (mask & 0b0100) != 0 {
+                    rects.push(Rect::new(tile_x, tile_y + half_h, half_w, half_h));
+                }
+                if (mask & 0b1000) != 0 {
+                    rects.push(Rect::new(tile_x + half_w, tile_y + half_h, half_w, half_h));
+                }
             }
         }
 
@@ -1248,6 +1273,25 @@ impl TileMap {
                 interact_range_world,
             });
         }
+    }
+
+    fn register_structure_spawner(&mut self, def: &StructureDef, x: usize, y: usize) {
+        if let Some(spawner_def) = &def.spawner {
+            let rect = Rect::new(
+                x as f32 * self.tile_size,
+                y as f32 * self.tile_size,
+                def.structure.width as f32 * self.tile_size,
+                def.structure.height as f32 * self.tile_size,
+            );
+            self.placed_spawners.push(PlacedSpawner {
+                def: spawner_def.clone(),
+                rect,
+            });
+        }
+    }
+
+    pub fn placed_spawners(&self) -> &[PlacedSpawner] {
+        &self.placed_spawners
     }
 
     pub fn fill_layer(&mut self, layer: LayerKind, id: u8) {
@@ -2150,6 +2194,9 @@ pub async fn load_structures_from_dir(
                 "spawner_block.json",
                 "warp_block.json",
                 "loot_block.json",
+                "lock_block.json",
+                "lock_block_h.json",
+                "lock_block_v.json",
             ],
         )
         .await;
@@ -2181,6 +2228,8 @@ pub async fn load_structures_from_dir(
                 frequency: raw.frequency.unwrap_or(0.05),
                 max_per_map: raw.max_per_map.unwrap_or(10),
                 min_distance: raw.min_distance.unwrap_or(64.0),
+                spawner: raw.spawner,
+                player_buildable: raw.player_buildable,
             });
         }
         return Ok(defs);
@@ -2223,6 +2272,8 @@ pub async fn load_structures_from_dir(
             frequency: raw.frequency.unwrap_or(0.05),
             max_per_map: raw.max_per_map.unwrap_or(10),
             min_distance: raw.min_distance.unwrap_or(64.0),
+            spawner: raw.spawner,
+            player_buildable: raw.player_buildable,
         });
     }
 
@@ -2253,6 +2304,10 @@ struct StructureFile {
     max_per_map: Option<usize>,
     #[serde(default)]
     min_distance: Option<f32>,
+    #[serde(default)]
+    pub spawner: Option<SpawnerDef>,
+    #[serde(default)]
+    player_buildable: bool,
 }
 
 #[derive(Deserialize)]

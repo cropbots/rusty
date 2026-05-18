@@ -1,0 +1,16 @@
+{
+  "id": "lock_22",
+  "prompt": "Wait 1 second, turn right, harvest, move forward 3!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "turn.right",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 2,
+      "y": 2
+    },
+    "robot_direction": "up",
+    "cells": []
+  }
+}

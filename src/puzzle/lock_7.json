@@ -1,0 +1,16 @@
+{
+  "id": "lock_7",
+  "prompt": "Move forward 3, move back 1, turn left!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "move.back",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 0,
+      "y": 2
+    },
+    "robot_direction": "right",
+    "cells": []
+  }
+}

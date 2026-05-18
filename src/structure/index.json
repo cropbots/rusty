@@ -1,7 +1,15 @@
 {
   "files": [
     "bush_plains.json",
+    "lock_block_h.json",
+    "lock_block.json",
+    "lock_block_v.json",
+    "loot_block.json",
     "sign.json",
-    "tree_plains.json"
+    "spawner_block.json",
+    "tree_plains.json",
+    "warp_block.json",
+    "campfire.json",
+    "scarecrow.json"
   ]
 }

@@ -1,0 +1,6 @@
+{
+  "id": "lock_37",
+  "prompt": "Lock Puzzle: write code that moves back 1, then moves back 2, then turns right, then turns left.",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "turn.right()"
+}

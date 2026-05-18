@@ -1,0 +1,6 @@
+{
+  "id": "lock_36",
+  "prompt": "Lock Puzzle: write code that harvests, then turns right, then moves back 1.",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "move.back(1)"
+}

@@ -188,6 +188,10 @@ impl Player {
         self.pos = clamp_hitbox_to_rect(self.hitbox, self.pos, border);
     }
 
+    pub fn clamp_to_rect(&mut self, rect: Rect) {
+        self.pos = clamp_hitbox_to_rect(self.hitbox, self.pos, rect);
+    }
+
     pub fn world_hitbox(&self) -> Rect {
         Rect::new(
             self.pos.x + self.hitbox.x,

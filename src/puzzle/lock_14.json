@@ -1,0 +1,16 @@
+{
+  "id": "lock_14",
+  "prompt": "Turn left, move forward 3, wait 1 second!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "move.forward",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 2,
+      "y": 2
+    },
+    "robot_direction": "up",
+    "cells": []
+  }
+}

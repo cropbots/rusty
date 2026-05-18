@@ -1,0 +1,6 @@
+{
+  "id": "lock_44",
+  "prompt": "Lock Puzzle: write code that scans, then turns right.",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "scan()"
+}

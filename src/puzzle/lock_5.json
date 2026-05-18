@@ -1,0 +1,27 @@
+{
+  "id": "lock_5",
+  "prompt": "Push the block and collect the coin!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "collect",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 0,
+      "y": 2
+    },
+    "robot_direction": "right",
+    "cells": [
+      {
+        "x": 1,
+        "y": 2,
+        "kind": "pushable"
+      },
+      {
+        "x": 3,
+        "y": 2,
+        "kind": "coin"
+      }
+    ]
+  }
+}

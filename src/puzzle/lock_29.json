@@ -1,0 +1,6 @@
+{
+  "id": "lock_29",
+  "prompt": "Lock Puzzle: write code that moves back 2, then harvests, then moves forward 3, then waits 1 second.",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "move.back(2)"
+}

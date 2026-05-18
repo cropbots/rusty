@@ -1,0 +1,38 @@
+id: virabirdBullet
+traits:
+  - target_player
+  - target_nearest_friend
+  - no_entity_collision
+  - no_map_collision
+  - point_towards_first_target
+stats:
+  hp: 1
+  speed: 520
+  damage: 1
+visuals:
+  sprite: "src/assets/projectiles/virabirdBullet.png"
+  draw_params:
+    dest_size: [6, 3.5]
+    rotation: 0.0
+    flip_x: false
+    flip_y: false
+    color: [255, 255, 255, 255]
+    offset: [0, 0]
+hitbox:
+  x: 0
+  y: 0
+  w: 6
+  h: 3.5
+behavior:
+  type: selector
+  children:
+    - type: sequence
+      children:
+        - type: condition
+          name: on_collision_with_target
+        - type: action
+          name: damage_target
+        - type: action
+          name: despawn
+    - type: action
+      name: move

@@ -21,18 +21,20 @@ const EXPEDITION_WALL_TILE: u8 = 225;
 pub const EXPEDITION_FLOOR_TILE: u8 = 226;
 const EXPEDITION_DUNGEON_ROOM_TARGET: usize = 140;
 const EXPEDITION_DUNGEON_MARGIN: usize = 8;
-const EXPEDITION_HALL_LENGTH: usize = 2;
-const EXPEDITION_ROOM_SIZES: [(usize, usize); 10] = [
-    (3, 4),
-    (4, 3),
-    (3, 3),
-    (4, 4),
-    (4, 5),
+const EXPEDITION_HALL_LENGTH: usize = 3;
+const EXPEDITION_ROOM_SIZES: [(usize, usize); 12] = [
     (5, 4),
-    (6, 6),
-    (6, 5),
-    (5, 6),
+    (4, 5),
     (5, 5),
+    (5, 6),
+    (6, 5),
+    (6, 6),
+    (6, 7),
+    (7, 6),
+    (7, 7),
+    (7, 8),
+    (8, 7),
+    (8, 8),
 ];
 
 #[cfg(target_arch = "wasm32")]
@@ -79,6 +81,7 @@ struct PendingRoom {
 struct DungeonLayout {
     rooms: Vec<TileRect>,
     edges: Vec<(usize, usize)>,
+    halls: Vec<TileRect>,
 }
 
 #[derive(Clone, Copy)]
@@ -195,100 +198,149 @@ pub fn scene_expedition(
     let layout = generate_expedition_dungeon(&mut next);
     place_expedition_dungeon_walls(&mut next);
     apply_dungeon_hpa_topology(&mut next, &layout);
-    place_expedition_blocks(&mut next, structures, &layout.rooms);
+    place_expedition_blocks(&mut next, structures, &layout.rooms, &layout.halls);
     *map = next;
 
     entities.clear();
     spawn_expedition_entities(map, entities, db, registry, &layout.rooms, tile_size);
 }
 
-fn place_expedition_blocks(map: &mut TileMap, structures: &[StructureDef], rooms: &[TileRect]) {
+fn place_expedition_blocks(
+    map: &mut TileMap,
+    structures: &[StructureDef],
+    rooms: &[TileRect],
+    halls: &[TileRect],
+) {
     let mut rng = DungeonRng::new(EXPEDITION_DUNGEON_SEED ^ 0xE8A4_31D2);
-    let candidates = ["spawner_block", "warp_block", "loot_block"];
-    let mut defs: Vec<&StructureDef> = Vec::new();
-    for id in candidates {
-        if let Some(def) = find_structure(structures, id) {
-            defs.push(def);
-        }
-    }
-    if defs.is_empty() || rooms.is_empty() {
-        return;
-    }
 
-    let uncommon_cap = ((rooms.len() as f32 * 0.06).round() as usize).max(1);
-    let target = (1 + rng.usize(5)).min(uncommon_cap).min(5);
-    let mut placed = 0usize;
+    // --- Loot blocks: place generously in rooms ---
+    let loot_candidates = ["loot_block", "spawner_block", "warp_block"];
+    let loot_defs: Vec<&StructureDef> = loot_candidates
+        .iter()
+        .filter_map(|id| find_structure(structures, id))
+        .collect();
+
+    // Shuffle room order
     let mut room_order: Vec<usize> = (0..rooms.len()).collect();
     for i in 0..room_order.len() {
         let j = rng.usize(room_order.len());
         room_order.swap(i, j);
     }
 
-    for room_idx in room_order {
-        if placed >= target {
-            break;
-        }
-        let room = rooms[room_idx];
-        if room.w < 5 || room.h < 5 {
-            continue;
-        }
-        if rng.usize(100) >= 22 {
-            continue;
-        }
-
-        let Some(interior) = room_interior(room, 1) else {
-            continue;
-        };
-        let def = defs[rng.usize(defs.len())];
-        let sw = def.structure.width();
-        let sh = def.structure.height();
-        if sw == 0 || sh == 0 || sw > interior.w || sh > interior.h {
-            continue;
-        }
-        let max_x = interior.x + interior.w - sw;
-        let max_y = interior.y + interior.h - sh;
-        let mut room_placed = false;
-        for _ in 0..8 {
-            let x = interior.x + rng.usize(max_x - interior.x + 1);
-            let y = interior.y + rng.usize(max_y - interior.y + 1);
-            let rect = TileRect { x, y, w: sw, h: sh };
-            if structure_footprint_blocked(map, rect) {
+    // Target: roughly 40% of rooms get a block, minimum 6
+    let room_target = ((rooms.len() as f32 * 0.40).round() as usize).max(6);
+    let mut loot_placed = 0usize;
+    if !loot_defs.is_empty() {
+        for &room_idx in &room_order {
+            if loot_placed >= room_target {
+                break;
+            }
+            let room = rooms[room_idx];
+            if room.w < 4 || room.h < 4 {
                 continue;
             }
-            map.place_structure_def(def, x, y);
-            placed += 1;
-            room_placed = true;
-            break;
-        }
-        if !room_placed {
-            continue;
-        }
-    }
-
-    if placed > 0 {
-        return;
-    }
-
-    // Guarantee at least one block if any room can fit one.
-    for room in rooms.iter().copied() {
-        let Some(interior) = room_interior(room, 1) else {
-            continue;
-        };
-        for def in &defs {
+            // 70% chance to place in any eligible room
+            if rng.usize(100) >= 70 {
+                continue;
+            }
+            let Some(interior) = room_interior(room, 1) else {
+                continue;
+            };
+            let def = loot_defs[rng.usize(loot_defs.len())];
             let sw = def.structure.width();
             let sh = def.structure.height();
             if sw == 0 || sh == 0 || sw > interior.w || sh > interior.h {
                 continue;
             }
-            let x = interior.x + (interior.w - sw) / 2;
-            let y = interior.y + (interior.h - sh) / 2;
-            let rect = TileRect { x, y, w: sw, h: sh };
-            if structure_footprint_blocked(map, rect) {
+            let max_x = interior.x + interior.w - sw;
+            let max_y = interior.y + interior.h - sh;
+            for _ in 0..12 {
+                let x = interior.x + rng.usize((max_x - interior.x).max(1));
+                let y = interior.y + rng.usize((max_y - interior.y).max(1));
+                let rect = TileRect { x, y, w: sw, h: sh };
+                if structure_footprint_blocked(map, rect) {
+                    continue;
+                }
+                map.place_structure_def(def, x, y);
+                loot_placed += 1;
+                break;
+            }
+        }
+        // Guarantee at least one loot block
+        if loot_placed == 0 {
+            'guarantee: for room in rooms.iter().copied() {
+                let Some(interior) = room_interior(room, 1) else { continue };
+                for def in &loot_defs {
+                    let sw = def.structure.width();
+                    let sh = def.structure.height();
+                    if sw == 0 || sh == 0 || sw > interior.w || sh > interior.h { continue; }
+                    let x = interior.x + (interior.w - sw) / 2;
+                    let y = interior.y + (interior.h - sh) / 2;
+                    let rect = TileRect { x, y, w: sw, h: sh };
+                    if structure_footprint_blocked(map, rect) { continue; }
+                    map.place_structure_def(def, x, y);
+                    break 'guarantee;
+                }
+            }
+        }
+    }
+
+    // --- Lock blocks: place in hallways as gating ---
+    // Hallways are 2 wide. Use lock_block_h (2x1) for wide horizontal halls
+    // and lock_block_v (1x2) for wide vertical halls.
+    let lock_h = find_structure(structures, "lock_block_h");
+    let lock_v = find_structure(structures, "lock_block_v");
+    let lock_1x1 = find_structure(structures, "lock_block");
+
+    // Target: about 25% of hallways get a lock block, minimum 3
+    let lock_target = ((halls.len() as f32 * 0.25).round() as usize).max(3);
+    let mut lock_placed = 0usize;
+    let mut hall_order: Vec<usize> = (0..halls.len()).collect();
+    for i in 0..hall_order.len() {
+        let j = rng.usize(hall_order.len());
+        hall_order.swap(i, j);
+    }
+
+    for &hi in &hall_order {
+        if lock_placed >= lock_target {
+            break;
+        }
+        let hall = halls[hi];
+        if rng.usize(100) >= 60 {
+            continue;
+        }
+        // Determine orientation: horizontal hall (w >= h) vs vertical (h > w)
+        let (def, pw, ph) = if hall.w >= hall.h {
+            // Horizontal hallway (passage is E-W): use 1x2 vertical block to block it
+            if let Some(d) = lock_v {
+                (d, 1usize, 2usize)
+            } else if let Some(d) = lock_1x1 {
+                (d, 1usize, 1usize)
+            } else {
                 continue;
             }
-            map.place_structure_def(def, x, y);
-            return;
+        } else {
+            // Vertical hallway (passage is N-S): use 2x1 horizontal block to block it
+            if let Some(d) = lock_h {
+                (d, 2usize, 1usize)
+            } else if let Some(d) = lock_1x1 {
+                (d, 1usize, 1usize)
+            } else {
+                continue;
+            }
+        };
+        if pw > hall.w || ph > hall.h {
+            continue;
         }
+        // Centre the block in the hallway
+        let x = hall.x + (hall.w - pw) / 2;
+        let y = hall.y + (hall.h - ph) / 2;
+        let rect = TileRect { x, y, w: pw, h: ph };
+        if structure_footprint_blocked(map, rect) {
+            continue;
+        }
+        map.place_structure_def(def, x, y);
+        lock_placed += 1;
     }
 }
 
@@ -359,6 +411,7 @@ fn generate_expedition_dungeon(map: &mut TileMap) -> DungeonLayout {
     let mut rng = DungeonRng::new(EXPEDITION_DUNGEON_SEED);
     let mut rooms = Vec::with_capacity(EXPEDITION_DUNGEON_ROOM_TARGET);
     let mut edges = Vec::with_capacity(EXPEDITION_DUNGEON_ROOM_TARGET * 2);
+    let mut halls = Vec::with_capacity(EXPEDITION_DUNGEON_ROOM_TARGET * 2);
     let start = TileRect {
         x: EXPEDITION_WIDTH / 2 - 2,
         y: EXPEDITION_HEIGHT / 2 - 2,
@@ -394,10 +447,11 @@ fn generate_expedition_dungeon(map: &mut TileMap) -> DungeonLayout {
         carve_floor_rect(map, candidate.room);
         let next_idx = rooms.len();
         rooms.push(candidate.room);
+        halls.push(candidate.hall);
         edges.push((base_idx, next_idx));
     }
 
-    DungeonLayout { rooms, edges }
+    DungeonLayout { rooms, edges, halls }
 }
 
 fn apply_dungeon_hpa_topology(map: &mut TileMap, layout: &DungeonLayout) {
@@ -569,7 +623,7 @@ fn pending_room_from(
 
 fn hallway_width_for_side(side_len: usize) -> usize {
     let _ = side_len;
-    1
+    2
 }
 
 fn centered_span_start(outer_start: usize, outer_len: usize, inner_len: usize) -> Option<usize> {

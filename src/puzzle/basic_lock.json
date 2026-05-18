@@ -1,0 +1,15 @@
+{
+  "id": "basic_lock",
+  "prompt": "Reach the flag to complete the puzzle!",
+  "starter_code": "function solve()\n  move.forward(2)\n  turn.right()\n  move.forward(2)\n  flag()\nend",
+  "validator_contains": "flag",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {"x": 2, "y": 2},
+    "robot_direction": "up",
+    "cells": [
+      {"x": 4, "y": 4, "kind": "flag"}
+    ]
+  }
+}

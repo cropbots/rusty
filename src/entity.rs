@@ -12,12 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::particle::ParticleEmitter;
 use crate::r#trait::*;
 
-pub type MovementFn = fn(
+pub type MovementFn = for<'a> fn(
     entity: &mut EntityInstance,
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'a>,
 );
 
 pub type MovementParams = HashMap<String, f32>;
@@ -63,20 +63,36 @@ pub enum EntityKind {
     Misc,
 }
 
-pub const DEF_FLAG_TARGET_PLAYER: u16 = 1 << 0;
-pub const DEF_FLAG_TARGET_NEAREST_ENTITY: u16 = 1 << 1;
-pub const DEF_FLAG_TARGET_NEAREST_ENEMY: u16 = 1 << 2;
-pub const DEF_FLAG_TARGET_NEAREST_FRIEND: u16 = 1 << 3;
-pub const DEF_FLAG_TARGET_NEAREST_MISC: u16 = 1 << 4;
-pub const DEF_FLAG_NO_ENTITY_COLLISION: u16 = 1 << 5;
-pub const DEF_FLAG_NO_ENEMY_COLLISION: u16 = 1 << 6;
-pub const DEF_FLAG_NO_FRIEND_COLLISION: u16 = 1 << 7;
-pub const DEF_FLAG_NO_MISC_COLLISION: u16 = 1 << 8;
-pub const DEF_FLAG_NO_PLAYER_COLLISION: u16 = 1 << 9;
-pub const DEF_FLAG_DYNAMIC_TARGETING: u16 = 1 << 10;
-pub const DEF_FLAG_ERRATIC: u16 = 1 << 11;
-pub const DEF_FLAG_PATHFINDING: u16 = 1 << 12;
-pub const DEF_FLAG_PHASE_DUNGEON_WALLS: u16 = 1 << 13;
+pub const DEF_FLAG_TARGET_PLAYER: u32 = 1 << 0;
+pub const DEF_FLAG_TARGET_NEAREST_ENTITY: u32 = 1 << 1;
+pub const DEF_FLAG_TARGET_NEAREST_ENEMY: u32 = 1 << 2;
+pub const DEF_FLAG_TARGET_NEAREST_FRIEND: u32 = 1 << 3;
+pub const DEF_FLAG_TARGET_NEAREST_MISC: u32 = 1 << 4;
+pub const DEF_FLAG_NO_ENTITY_COLLISION: u32 = 1 << 5;
+pub const DEF_FLAG_NO_ENEMY_COLLISION: u32 = 1 << 6;
+pub const DEF_FLAG_NO_FRIEND_COLLISION: u32 = 1 << 7;
+pub const DEF_FLAG_NO_MISC_COLLISION: u32 = 1 << 8;
+pub const DEF_FLAG_NO_PLAYER_COLLISION: u32 = 1 << 9;
+pub const DEF_FLAG_DYNAMIC_TARGETING: u32 = 1 << 10;
+pub const DEF_FLAG_ERRATIC: u32 = 1 << 11;
+pub const DEF_FLAG_PATHFINDING: u32 = 1 << 12;
+pub const DEF_FLAG_PHASE_DUNGEON_WALLS: u32 = 1 << 13;
+pub const DEF_FLAG_POINT_PLAYER: u32 = 1 << 14;
+pub const DEF_FLAG_POINT_ENTITY: u32 = 1 << 15;
+pub const DEF_FLAG_POINT_ENEMY: u32 = 1 << 16;
+pub const DEF_FLAG_POINT_FRIEND: u32 = 1 << 17;
+pub const DEF_FLAG_POINT_MISC: u32 = 1 << 18;
+pub const DEF_FLAG_POINT_TARGET: u32 = 1 << 19;
+pub const DEF_FLAG_TARGET_FIRST_ENTITY: u32 = 1 << 20;
+pub const DEF_FLAG_TARGET_FIRST_ENEMY: u32 = 1 << 21;
+pub const DEF_FLAG_TARGET_FIRST_FRIEND: u32 = 1 << 22;
+pub const DEF_FLAG_TARGET_FIRST_MISC: u32 = 1 << 23;
+pub const DEF_FLAG_POINT_FIRST_ENTITY: u32 = 1 << 24;
+pub const DEF_FLAG_POINT_FIRST_ENEMY: u32 = 1 << 25;
+pub const DEF_FLAG_POINT_FIRST_FRIEND: u32 = 1 << 26;
+pub const DEF_FLAG_POINT_FIRST_MISC: u32 = 1 << 27;
+pub const DEF_FLAG_TARGET_FIRST_TARGET: u32 = 1 << 28;
+pub const DEF_FLAG_POINT_FIRST_TARGET: u32 = 1 << 29;
 
 const PATHFIND_MAX_VISITED_TILES: usize = 3_000;
 const PATHFIND_REPLAN_INTERVAL: f32 = 0.85;
@@ -223,6 +239,36 @@ impl Entity {
         let def = &db.entities[self.instance.def];
         self.instance.pos =
             crate::helpers::clamp_hitbox_to_rect(def.hitbox, self.instance.pos, bounds);
+        self.push_out_of_solids(map, db);
+    }
+
+    fn push_out_of_solids(&mut self, map: &crate::map::TileMap, db: &EntityDatabase) {
+        let def = &db.entities[self.instance.def];
+        let hb = def.world_hitbox(self.instance.pos);
+        let center = vec2(hb.x + hb.w * 0.5, hb.y + hb.h * 0.5);
+        let Some(grid) = map.grid_index(center) else {
+            return;
+        };
+        let gx = grid.x.max(0) as usize;
+        let gy = grid.y.max(0) as usize;
+        if gx >= map.width() || gy >= map.height() || !map.is_solid(gx, gy) {
+            return;
+        }
+        let tile = map.tile_size().max(1.0);
+        for radius in 1..=10i32 {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let nx = gx as i32 + dx * radius;
+                let ny = gy as i32 + dy * radius;
+                if nx < 0 || ny < 0 {
+                    continue;
+                }
+                let (nx, ny) = (nx as usize, ny as usize);
+                if nx < map.width() && ny < map.height() && !map.is_solid(nx, ny) {
+                    self.instance.pos = vec2(nx as f32 * tile, ny as f32 * tile);
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -239,19 +285,19 @@ pub struct EntityDef {
     pub base_stats: StatBlock,
     pub speed: f32,
     pub collides: bool,
-    pub flags: u16,
+    pub flags: u32,
 }
 
 impl EntityDef {
-    pub fn has_flag(&self, bit: u16) -> bool {
+    pub fn has_flag(&self, bit: u32) -> bool {
         (self.flags & bit) != 0
     }
 
     pub fn draw(&self, pos: Vec2) {
-        self.draw_with_alpha(pos, 1.0);
+        self.draw_with_alpha(pos, 1.0, 0.0);
     }
 
-    pub fn draw_with_alpha(&self, pos: Vec2, alpha: f32) {
+    pub fn draw_with_alpha(&self, pos: Vec2, alpha: f32, rotation_offset: f32) {
         let tex = &self.texture.texture;
         let draw = &self.texture.draw;
 
@@ -260,7 +306,7 @@ impl EntityDef {
             .or_else(|| Some(vec2(tex.width(), tex.height())));
         let params = DrawTextureParams {
             dest_size: dest,
-            rotation: draw.rotation,
+            rotation: draw.rotation + rotation_offset,
             flip_x: draw.flip_x,
             flip_y: draw.flip_y,
             pivot: draw.pivot,
@@ -336,6 +382,14 @@ impl Target {
             Target::Entity(entity) => Some(entity.hitbox),
         }
     }
+
+    pub fn is_alive(&self) -> bool {
+        match *self {
+            Target::Position(_) => true,
+            Target::Player(_) => true,
+            Target::Entity(entity) => entity.alive,
+        }
+    }
 }
 
 pub struct DamageEvent {
@@ -349,7 +403,9 @@ pub struct EntityInstance {
     pub pos: Vec2,
     pub vel: Vec2,
     pub speed: f32,
-    pub flags: u16,
+    pub flags: u32,
+    pub rotation: f32,
+    pub pointing: Vec2,
     pub behaviors: Vec<BehaviorRuntime>,
     pub stats: StatBlock,
     pub hp: f32,
@@ -420,7 +476,60 @@ impl EntityInstance {
         } else {
             self.dynamic_target_timer = 0.0;
         }
-        self.current_target = ctx.resolve_target(db, self, dynamic_targeting, force_retarget);
+        let mut should_resolve = self.current_target.is_none();
+        if let Some(t) = &self.current_target {
+            if !t.is_alive() {
+                should_resolve = true;
+                force_retarget = true;
+            }
+        }
+        if dynamic_targeting || should_resolve {
+            self.current_target = ctx.resolve_target(self, dynamic_targeting, force_retarget);
+        }
+
+        // Update pointing direction based on traits
+        let point_player = (def_flags & DEF_FLAG_POINT_PLAYER) != 0;
+        let point_entity = (def_flags & DEF_FLAG_POINT_ENTITY) != 0;
+        let point_enemy = (def_flags & DEF_FLAG_POINT_ENEMY) != 0;
+        let point_friend = (def_flags & DEF_FLAG_POINT_FRIEND) != 0;
+        let point_misc = (def_flags & DEF_FLAG_POINT_MISC) != 0;
+        let point_target = (def_flags & DEF_FLAG_POINT_TARGET) != 0;
+        let point_first_entity = (def_flags & DEF_FLAG_POINT_FIRST_ENTITY) != 0;
+        let point_first_enemy = (def_flags & DEF_FLAG_POINT_FIRST_ENEMY) != 0;
+        let point_first_friend = (def_flags & DEF_FLAG_POINT_FIRST_FRIEND) != 0;
+        let point_first_misc = (def_flags & DEF_FLAG_POINT_FIRST_MISC) != 0;
+        let point_first_target = (def_flags & DEF_FLAG_POINT_FIRST_TARGET) != 0;
+
+        let mut pt_target = None;
+        if point_player {
+            pt_target = ctx.player.map(Target::Player);
+        } else if point_target || point_first_target {
+            pt_target = self.current_target;
+        } else if point_enemy {
+            pt_target = ctx.resolve_target_by_kind(self, EntityKind::Enemy);
+        } else if point_friend {
+            pt_target = ctx.resolve_target_by_kind(self, EntityKind::Friend);
+        } else if point_misc {
+            pt_target = ctx.resolve_target_by_kind(self, EntityKind::Misc);
+        } else if point_entity {
+            pt_target = ctx.resolve_nearest_any(self);
+        } else if point_first_enemy {
+            pt_target = ctx.resolve_first_by_kind(self, EntityKind::Enemy);
+        } else if point_first_friend {
+            pt_target = ctx.resolve_first_by_kind(self, EntityKind::Friend);
+        } else if point_first_misc {
+            pt_target = ctx.resolve_first_by_kind(self, EntityKind::Misc);
+        } else if point_first_entity {
+            pt_target = ctx.resolve_first_any(self);
+        }
+
+        if let Some(target) = pt_target {
+            let dir = (target.position() - self.pos).normalize_or_zero();
+            if dir.length_squared() > 0.0001 {
+                self.pointing = dir;
+                self.rotation = dir.y.atan2(dir.x);
+            }
+        }
         if self.contact_cooldown > 0.0 {
             self.contact_cooldown = (self.contact_cooldown - dt).max(0.0);
         }
@@ -493,7 +602,7 @@ impl EntityInstance {
         if db.entities[self.def].id == "chopbot" {
             if let Some(Target::Player(player)) = self.current_target {
                 let dist = self.pos.distance(player.pos);
-                if dist > 620.0 {
+                if dist > 400.0 {
                     let toward = (self.pos - player.pos).normalize_or_zero();
                     let fallback = if toward.length_squared() > 0.0 {
                         toward
@@ -649,37 +758,10 @@ impl EntityInstance {
         &mut self,
         map: &TileMap,
         ctx: &mut EntityContext,
-        def_flags: u16,
+        def_flags: u32,
         dt: f32,
     ) {
-        let has_path_behavior = self.behaviors.iter().any(|behavior| {
-            matches!(
-                behavior.name.as_str(),
-                "wander"
-                    | "seek"
-                    | "seek_player"
-                    | "seek_nearest_entity"
-                    | "seek_nearest_enemy"
-                    | "seek_nearest_friend"
-                    | "seek_nearest_misc"
-                    | "watch"
-                    | "watch_player"
-                    | "watch_nearest_entity"
-                    | "watch_nearest_enemy"
-                    | "watch_nearest_friend"
-                    | "watch_nearest_misc"
-                    | "flee"
-                    | "flee_player"
-                    | "flee_nearest_entity"
-                    | "flee_nearest_enemy"
-                    | "flee_nearest_friend"
-                    | "flee_nearest_misc"
-                    | "bird_orbit"
-            )
-        });
-        if ((def_flags & DEF_FLAG_PATHFINDING) == 0 && !has_path_behavior)
-            || self.vel.length_squared() <= 0.0001
-        {
+        if (def_flags & DEF_FLAG_PATHFINDING) == 0 || self.vel.length_squared() <= 0.0001 {
             return;
         }
         let Some(target_pos) = self.current_target.as_ref().map(Target::position) else {
@@ -710,11 +792,11 @@ impl EntityInstance {
     }
 
     pub fn draw(&self, db: &EntityDatabase) {
-        db.entities[self.def].draw(self.pos);
+        db.entities[self.def].draw_with_alpha(self.pos, 1.0, self.rotation);
     }
 
     pub fn draw_with_alpha(&self, db: &EntityDatabase, alpha: f32) {
-        db.entities[self.def].draw_with_alpha(self.pos, alpha);
+        db.entities[self.def].draw_with_alpha(self.pos, alpha, self.rotation);
     }
 
     pub fn hitbox(&self, db: &EntityDatabase) -> Rect {
@@ -841,6 +923,11 @@ impl MovementRegistry {
         registry.register("seek_nearest_enemy", movement_seek_nearest_enemy);
         registry.register("seek_nearest_friend", movement_seek_nearest_friend);
         registry.register("seek_nearest_misc", movement_seek_nearest_misc);
+        registry.register("seek_first_entity", movement_seek_first_entity);
+        registry.register("seek_first_enemy", movement_seek_first_enemy);
+        registry.register("seek_first_friend", movement_seek_first_friend);
+        registry.register("seek_first_misc", movement_seek_first_misc);
+        registry.register("seek_first_target", movement_seek_first_target);
         registry.register("seek_player", movement_seek_player);
         registry.register("seek_nearest_farm_tile", movement_seek_nearest_farm_tile);
         registry.register("smart_seek_farm_tile", movement_smart_seek_farm_tile);
@@ -856,11 +943,21 @@ impl MovementRegistry {
         registry.register("watch_nearest_enemy", movement_watch_nearest_enemy);
         registry.register("watch_nearest_friend", movement_watch_nearest_friend);
         registry.register("watch_nearest_misc", movement_watch_nearest_misc);
+        registry.register("watch_first_entity", movement_watch_first_entity);
+        registry.register("watch_first_enemy", movement_watch_first_enemy);
+        registry.register("watch_first_friend", movement_watch_first_friend);
+        registry.register("watch_first_misc", movement_watch_first_misc);
+        registry.register("watch_first_target", movement_watch_first_target);
         registry.register("watch_player", movement_watch_player);
         registry.register("flee_nearest_entity", movement_flee_nearest_entity);
         registry.register("flee_nearest_enemy", movement_flee_nearest_enemy);
         registry.register("flee_nearest_friend", movement_flee_nearest_friend);
         registry.register("flee_nearest_misc", movement_flee_nearest_misc);
+        registry.register("flee_first_entity", movement_flee_first_entity);
+        registry.register("flee_first_enemy", movement_flee_first_enemy);
+        registry.register("flee_first_friend", movement_flee_first_friend);
+        registry.register("flee_first_misc", movement_flee_first_misc);
+        registry.register("flee_first_target", movement_flee_first_target);
         registry.register("flee_player", movement_flee_player);
         registry.register("dash_at_target", movement_dash_at_target);
         registry.register("curve_dash_at_target", movement_curve_dash_at_target);
@@ -868,6 +965,19 @@ impl MovementRegistry {
         registry.register("virabird_ai", movement_virabird_ai);
         registry.register("bird_orbit", movement_bird_orbit);
         registry.register("rebound", movement_rebound);
+        registry.register("move", movement_move);
+        registry.register("damage_target", movement_damage_target);
+        registry.register("damage_player", movement_damage_player);
+        registry.register("damage_nearest_enemy", movement_damage_nearest_enemy);
+        registry.register("damage_nearest_friend", movement_damage_nearest_friend);
+        registry.register("damage_nearest_misc", movement_damage_nearest_misc);
+        registry.register("damage_nearest_entity", movement_damage_nearest_entity);
+        registry.register("damage_first_enemy", movement_damage_first_enemy);
+        registry.register("damage_first_friend", movement_damage_first_friend);
+        registry.register("damage_first_misc", movement_damage_first_misc);
+        registry.register("damage_first_entity", movement_damage_first_entity);
+        registry.register("damage_first_target", movement_damage_first_target);
+        registry.register("despawn", movement_despawn);
         registry
     }
 
@@ -884,13 +994,14 @@ impl MovementRegistry {
     }
 }
 
-pub struct EntityContext {
+pub struct EntityContext<'a> {
     pub player: Option<PlayerTarget>,
     pub target: Option<Target>,
     pub entities: Vec<EntityTarget>,
     pub target_cache: HashMap<(u64, u8), Option<EntityTarget>>,
     pub view_height: f32,
     pub damage_events: Vec<DamageEvent>,
+    pub db: &'a EntityDatabase,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -1092,7 +1203,7 @@ fn line_pathable(map: &TileMap, from: Vec2, to: Vec2) -> bool {
     true
 }
 
-impl EntityContext {
+impl<'a> EntityContext<'a> {
     pub fn pathfind_direction(
         &mut self,
         map: &TileMap,
@@ -1185,30 +1296,104 @@ impl EntityContext {
             follow.next_idx = 0;
             follow.repath_timer = 0.2;
         }
+        if line_pathable(map, from, goal) {
+            return Some(goal - from);
+        }
+        let delta = goal - from;
+        if delta.length_squared() > 0.0001 {
+            return Some(delta.normalize() * map.tile_size());
+        }
         None
+    }
+
+    pub fn resolve_target_by_kind(&self, entity: &EntityInstance, kind: EntityKind) -> Option<Target> {
+        let mut best: Option<(f32, EntityTarget)> = None;
+        for other in &self.entities {
+            if other.id == entity.uid || !other.alive || other.kind != kind {
+                continue;
+            }
+            let d = entity.pos.distance_squared(other.pos);
+            if best.is_none() || d < best.unwrap().0 {
+                best = Some((d, *other));
+            }
+        }
+        best.map(|(_, e)| Target::Entity(e))
+    }
+
+    pub fn resolve_first_by_kind(&self, entity: &EntityInstance, kind: EntityKind) -> Option<Target> {
+        self.entities
+            .iter()
+            .find(|other| other.id != entity.uid && other.alive && other.kind == kind)
+            .map(|e| Target::Entity(*e))
+    }
+
+    pub fn resolve_nearest_any(&self, entity: &EntityInstance) -> Option<Target> {
+        let mut best: Option<(f32, Target)> = None;
+        if let Some(player) = self.player {
+            best = Some((entity.pos.distance_squared(player.pos), Target::Player(player)));
+        }
+        for other in &self.entities {
+            if other.id == entity.uid || !other.alive {
+                continue;
+            }
+            let d = entity.pos.distance_squared(other.pos);
+            if best.is_none() || d < best.unwrap().0 {
+                best = Some((d, Target::Entity(*other)));
+            }
+        }
+        best.map(|(_, t)| t)
+    }
+
+    pub fn resolve_first_any(&self, entity: &EntityInstance) -> Option<Target> {
+        if let Some(player) = self.player {
+            return Some(Target::Player(player));
+        }
+        self.entities
+            .iter()
+            .find(|other| other.id != entity.uid && other.alive)
+            .map(|e| Target::Entity(*e))
     }
 
     fn resolve_target(
         &mut self,
-        db: &EntityDatabase,
         entity: &EntityInstance,
         dynamic_targeting: bool,
         force_retarget: bool,
     ) -> Option<Target> {
+        let db = self.db;
         if let Some(target) = self.target {
             return Some(target);
         }
         let def_flags = db.entities[entity.def].flags;
         let target_player = (def_flags & DEF_FLAG_TARGET_PLAYER) != 0;
-        if target_player {
+        let target_any = (def_flags & (DEF_FLAG_TARGET_NEAREST_ENTITY | DEF_FLAG_TARGET_FIRST_ENTITY | DEF_FLAG_TARGET_FIRST_TARGET)) != 0;
+        let target_enemy = (def_flags & (DEF_FLAG_TARGET_NEAREST_ENEMY | DEF_FLAG_TARGET_FIRST_ENEMY)) != 0;
+        let target_friend = (def_flags & (DEF_FLAG_TARGET_NEAREST_FRIEND | DEF_FLAG_TARGET_FIRST_FRIEND)) != 0;
+        let target_misc = (def_flags & (DEF_FLAG_TARGET_NEAREST_MISC | DEF_FLAG_TARGET_FIRST_MISC)) != 0;
+        let is_first = (def_flags & (DEF_FLAG_TARGET_FIRST_ENTITY | DEF_FLAG_TARGET_FIRST_ENEMY | DEF_FLAG_TARGET_FIRST_FRIEND | DEF_FLAG_TARGET_FIRST_MISC | DEF_FLAG_TARGET_FIRST_TARGET)) != 0;
+        let has_specific_target_flags = target_enemy || target_friend || target_misc;
+        if target_player && !target_any && !has_specific_target_flags {
             return self.player.map(Target::Player);
         }
 
-        let target_any = (def_flags & DEF_FLAG_TARGET_NEAREST_ENTITY) != 0;
-        let target_enemy = (def_flags & DEF_FLAG_TARGET_NEAREST_ENEMY) != 0;
-        let target_friend = (def_flags & DEF_FLAG_TARGET_NEAREST_FRIEND) != 0;
-        let target_misc = (def_flags & DEF_FLAG_TARGET_NEAREST_MISC) != 0;
-        let has_specific_target_flags = target_enemy || target_friend || target_misc;
+        if target_player && target_friend && !target_any && !target_enemy && !target_misc {
+            let mut best_friend: Option<(f32, EntityTarget)> = None;
+            for candidate in &self.entities {
+                if candidate.id == entity.uid || !candidate.alive || candidate.kind != EntityKind::Friend
+                {
+                    continue;
+                }
+                let dist_sq = entity.pos.distance_squared(candidate.pos);
+                match best_friend {
+                    Some((best_dist, _)) if dist_sq >= best_dist => {}
+                    _ => best_friend = Some((dist_sq, *candidate)),
+                }
+            }
+            if let Some((_, friend)) = best_friend {
+                return Some(Target::Entity(friend));
+            }
+            return self.player.map(Target::Player);
+        }
         let is_kind_targetable = |kind: EntityKind| match kind {
             EntityKind::Enemy => {
                 if has_specific_target_flags {
@@ -1319,7 +1504,27 @@ impl EntityContext {
                 best.map(|(_, target)| target)
             };
 
-            let resolved = pick_nearest(true).or_else(|| pick_nearest(false));
+            let pick_first = |exclude_current: bool| -> Option<EntityTarget> {
+                for candidate in &self.entities {
+                    if candidate.id == entity.uid
+                        || !candidate.alive
+                        || !mode_accepts(candidate.kind)
+                    {
+                        continue;
+                    }
+                    if exclude_current && current_id == Some(candidate.id) {
+                        continue;
+                    }
+                    return Some(*candidate);
+                }
+                None
+            };
+
+            let resolved = if is_first {
+                pick_first(true).or_else(|| pick_first(false))
+            } else {
+                pick_nearest(true).or_else(|| pick_nearest(false))
+            };
             return resolved.map(Target::Entity);
         }
 
@@ -1537,7 +1742,9 @@ impl EntityDatabase {
             stats,
             hp: max_hp,
             max_hp,
-            collision_scratch: Vec::with_capacity(25),
+            rotation: 0.0,
+            pointing: vec2(1.0, 0.0),
+            collision_scratch: Vec::with_capacity(8),
             dynamic_collision_scratch: Vec::with_capacity(25),
             current_target: None,
             dynamic_target_timer: 0.0,
@@ -1585,7 +1792,7 @@ fn hitbox_center_world(pos: Vec2, hitbox: Rect) -> Vec2 {
 }
 
 fn collect_dynamic_collision_hitboxes(
-    entity_flags: u16,
+    entity_flags: u32,
     entity_uid: u64,
     current_target: Option<Target>,
     ctx: &EntityContext,
@@ -1656,7 +1863,7 @@ fn action_params(params: &MovementParams, extra: &HashMap<String, YamlValue>) ->
     merged
 }
 
-fn eval_behavior(node: &BehaviorNode, entity: &EntityInstance, ctx: &EntityContext) -> EvalResult {
+fn eval_behavior(node: &BehaviorNode, entity: &EntityInstance, ctx: &mut EntityContext<'_>) -> EvalResult {
     match node {
         BehaviorNode::Action {
             name,
@@ -1755,7 +1962,7 @@ fn eval_behavior(node: &BehaviorNode, entity: &EntityInstance, ctx: &EntityConte
 fn select_actions(
     node: &BehaviorNode,
     entity: &EntityInstance,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) -> Vec<SelectedAction> {
     let result = eval_behavior(node, entity, ctx);
     let primary = result.primary;
@@ -1783,7 +1990,7 @@ fn eval_condition(
     name: &str,
     value: Option<f32>,
     entity: &EntityInstance,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) -> bool {
     let range = value.unwrap_or(1.0).max(0.0) * ctx.view_height.max(1.0);
     let in_range_sq = range * range;
@@ -1817,6 +2024,100 @@ fn eval_condition(
         "friend_in_range" => any_kind_in_range(Some(EntityKind::Friend)),
         "misc_in_range" => any_kind_in_range(Some(EntityKind::Misc)),
         "has_target" => entity.current_target.is_some(),
+        "on_collision_with_target" => {
+            if let Some(target) = entity.current_target {
+                match target {
+                    Target::Player(p) => {
+                        if let Some(player) = ctx.player {
+                            entity.hitbox(ctx.db).overlaps(&player.hitbox)
+                        } else {
+                            false
+                        }
+                    }
+                    Target::Entity(e) => {
+                        if let Some(other) = ctx.entities.iter().find(|ent| ent.id == e.id) {
+                            entity.hitbox(ctx.db).overlaps(&other.hitbox)
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+        "on_collision_with_player" => {
+            if let Some(player) = ctx.player {
+                entity.hitbox(ctx.db).overlaps(&player.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_nearest_enemy" => {
+            if let Some(Target::Entity(e)) = ctx.resolve_target_by_kind(entity, EntityKind::Enemy) {
+                entity.hitbox(ctx.db).overlaps(&e.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_nearest_friend" => {
+            if let Some(Target::Entity(e)) = ctx.resolve_target_by_kind(entity, EntityKind::Friend) {
+                entity.hitbox(ctx.db).overlaps(&e.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_nearest_misc" => {
+            if let Some(Target::Entity(e)) = ctx.resolve_target_by_kind(entity, EntityKind::Misc) {
+                entity.hitbox(ctx.db).overlaps(&e.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_nearest_entity" => {
+            if let Some(target) = ctx.resolve_nearest_any(entity) {
+                if let Some(hitbox) = target.hitbox() {
+                    entity.hitbox(ctx.db).overlaps(&hitbox)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        "on_collision_with_first_enemy" => {
+            if let Some(Target::Entity(e)) = ctx.resolve_first_by_kind(entity, EntityKind::Enemy) {
+                entity.hitbox(ctx.db).overlaps(&e.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_first_friend" => {
+            if let Some(Target::Entity(e)) = ctx.resolve_first_by_kind(entity, EntityKind::Friend) {
+                entity.hitbox(ctx.db).overlaps(&e.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_first_misc" => {
+            if let Some(Target::Entity(e)) = ctx.resolve_first_by_kind(entity, EntityKind::Misc) {
+                entity.hitbox(ctx.db).overlaps(&e.hitbox)
+            } else {
+                false
+            }
+        }
+        "on_collision_with_first_entity" | "on_collision_with_first_target" => {
+            if let Some(target) = ctx.resolve_first_any(entity) {
+                if let Some(hitbox) = target.hitbox() {
+                    entity.hitbox(ctx.db).overlaps(&hitbox)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
         "dealt_damage" => entity.dealt_damage_last_tick,
         _ => false,
     }
@@ -1872,8 +2173,8 @@ fn trait_indices_have_flag(trait_indices: &[usize], traits: &[TraitDef], flag: &
     })
 }
 
-fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef]) -> u16 {
-    let mut flags = 0u16;
+fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef]) -> u32 {
+    let mut flags = 0u32;
 
     if trait_indices_have_flag(trait_indices, traits, "target_player") {
         flags |= DEF_FLAG_TARGET_PLAYER;
@@ -1916,6 +2217,54 @@ fn entity_flags_from_trait_indices(trait_indices: &[usize], traits: &[TraitDef])
     }
     if trait_indices_have_flag(trait_indices, traits, "phase_dungeon_walls") {
         flags |= DEF_FLAG_PHASE_DUNGEON_WALLS;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_player") {
+        flags |= DEF_FLAG_POINT_PLAYER;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_nearest_entity") {
+        flags |= DEF_FLAG_POINT_ENTITY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_nearest_enemy") {
+        flags |= DEF_FLAG_POINT_ENEMY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_nearest_friend") {
+        flags |= DEF_FLAG_POINT_FRIEND;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_nearest_misc") {
+        flags |= DEF_FLAG_POINT_MISC;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_target") {
+        flags |= DEF_FLAG_POINT_TARGET;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_first_entity") {
+        flags |= DEF_FLAG_TARGET_FIRST_ENTITY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_first_enemy") {
+        flags |= DEF_FLAG_TARGET_FIRST_ENEMY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_first_friend") {
+        flags |= DEF_FLAG_TARGET_FIRST_FRIEND;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_first_misc") {
+        flags |= DEF_FLAG_TARGET_FIRST_MISC;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_first_entity") {
+        flags |= DEF_FLAG_POINT_FIRST_ENTITY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_first_enemy") {
+        flags |= DEF_FLAG_POINT_FIRST_ENEMY;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_first_friend") {
+        flags |= DEF_FLAG_POINT_FIRST_FRIEND;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_first_misc") {
+        flags |= DEF_FLAG_POINT_FIRST_MISC;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "target_first_target") {
+        flags |= DEF_FLAG_TARGET_FIRST_TARGET;
+    }
+    if trait_indices_have_flag(trait_indices, traits, "point_towards_first_target") {
+        flags |= DEF_FLAG_POINT_FIRST_TARGET;
     }
 
     flags
@@ -2107,8 +2456,8 @@ async fn load_entities_from_dir_wasm(
         let pivot = draw_params.pivot.map(|v| vec2(v[0], v[1]));
 
         let hitbox = Rect::new(
-            -raw.hitbox.w + raw.hitbox.x,
-            -raw.hitbox.h * 1.5 + raw.hitbox.y,
+            -raw.hitbox.w * 0.5 + raw.hitbox.x,
+            -raw.hitbox.h * 0.5 + raw.hitbox.y,
             raw.hitbox.w,
             raw.hitbox.h,
         );
@@ -2240,8 +2589,8 @@ async fn load_entities_from_dir(
 
         // Center hitbox on the sprite, while allowing YAML x/y to act as a center offset.
         let hitbox = Rect::new(
-            -raw.hitbox.w + raw.hitbox.x,
-            -raw.hitbox.h * 1.5 + raw.hitbox.y,
+            -raw.hitbox.w * 0.5 + raw.hitbox.x,
+            -raw.hitbox.h * 0.5 + raw.hitbox.y,
             raw.hitbox.w,
             raw.hitbox.h,
         );

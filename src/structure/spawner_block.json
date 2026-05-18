@@ -5,11 +5,14 @@
   "background": [0],
   "foreground": [0],
   "colliders": [15],
-  "interactors": [15],
-  "on_interact": ["spawner:2.0:8:virat,virabird"],
-  "interact_range": 0.0,
+  "interactors": [],
+  "spawner": {
+    "interval": 1.0,
+    "total": 16,
+    "entities": ["virat", "virabird"]
+  },
   "overlay": [59],
-  "frequency": 0.0,
-  "max_per_map": 0,
+  "frequency": 1.0,
+  "max_per_map": 999,
   "min_distance": 0.0
 }

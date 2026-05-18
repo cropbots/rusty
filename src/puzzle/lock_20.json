@@ -1,0 +1,16 @@
+{
+  "id": "lock_20",
+  "prompt": "Scan, turn right, wait 1 second, move forward 2!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "wait",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 2,
+      "y": 2
+    },
+    "robot_direction": "up",
+    "cells": []
+  }
+}

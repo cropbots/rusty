@@ -1,0 +1,22 @@
+{
+  "id": "lock_6",
+  "prompt": "Use a repeat loop to move multiple times!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "repeat",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 0,
+      "y": 2
+    },
+    "robot_direction": "right",
+    "cells": [
+      {
+        "x": 4,
+        "y": 2,
+        "kind": "flag"
+      }
+    ]
+  }
+}

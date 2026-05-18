@@ -1,0 +1,16 @@
+{
+  "id": "lock_27",
+  "prompt": "Harvest, move back 2, turn left, move forward 1!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "turn.left",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 2,
+      "y": 2
+    },
+    "robot_direction": "up",
+    "cells": []
+  }
+}

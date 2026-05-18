@@ -23,9 +23,9 @@ const WHEEL_SPIN_SPEED: f32 = 0.28;
 
 #[derive(Clone, Copy)]
 struct WheelSlotLayout {
-    item: ItemId,
+    item: Option<ItemId>,
     rect: Rect,
-    key_index: Option<usize>,
+    key_index: usize,
 }
 
 struct InventoryLayout {
@@ -34,10 +34,11 @@ struct InventoryLayout {
     wheel_slots: Vec<WheelSlotLayout>,
 }
 
+#[derive(Clone)]
 pub struct StackInventory {
     counts: HashMap<ItemId, u32>,
     order: Vec<ItemId>,
-    selected_item: Option<ItemId>,
+    selected_hotbar_slot: usize,
     open: bool,
 }
 
@@ -46,7 +47,7 @@ impl StackInventory {
         Self {
             counts: HashMap::new(),
             order: Vec::new(),
-            selected_item: None,
+            selected_hotbar_slot: 0,
             open: false,
         }
     }
@@ -64,7 +65,7 @@ impl StackInventory {
             };
             inventory.add(item, amount.max(1));
         }
-        inventory.selected_item = inventory.priority_items().first().copied();
+        inventory.selected_hotbar_slot = 0;
         inventory
     }
 
@@ -77,9 +78,7 @@ impl StackInventory {
             self.order.push(item);
         }
         *entry = entry.saturating_add(amount);
-        if self.selected_item.is_none() {
-            self.selected_item = Some(item);
-        }
+        let _ = item;
     }
 
     pub fn remove(&mut self, item: ItemId, amount: u32) -> u32 {
@@ -94,9 +93,6 @@ impl StackInventory {
         if *existing == 0 {
             self.counts.remove(&item);
             self.order.retain(|candidate| *candidate != item);
-            if self.selected_item == Some(item) {
-                self.selected_item = self.priority_items().first().copied();
-            }
         }
         removed
     }
@@ -116,11 +112,18 @@ impl StackInventory {
     }
 
     pub fn selected_item(&self) -> Option<ItemId> {
-        self.selected_item
+        self.hotbar_item(self.selected_hotbar_slot)
+    }
+
+    pub fn hotbar_item(&self, slot: usize) -> Option<ItemId> {
+        if slot >= HOTBAR_SIZE {
+            return None;
+        }
+        self.priority_items().get(slot).copied()
     }
 
     pub fn consume_selected_one(&mut self) -> Option<ItemId> {
-        let selected = self.selected_item?;
+        let selected = self.selected_item()?;
         if self.amount(selected) == 0 {
             return None;
         }
@@ -168,7 +171,7 @@ impl StackInventory {
                 _ => KeyCode::Unknown,
             };
             if is_key_pressed(key) {
-                self.selected_item = self.priority_items().get(slot).copied();
+                self.selected_hotbar_slot = slot;
             }
         }
 
@@ -199,16 +202,12 @@ impl StackInventory {
             if self.open {
                 for slot in &layout.wheel_slots {
                     if slot.rect.contains(mouse) {
-                        self.selected_item = Some(slot.item);
+                        self.selected_hotbar_slot = slot.key_index;
                         self.open = false;
                         return;
                     }
                 }
             }
-        }
-
-        if self.selected_item.is_none_or(|item| self.amount(item) == 0) {
-            self.selected_item = self.priority_items().first().copied();
         }
     }
 
@@ -282,7 +281,7 @@ impl StackInventory {
             WHEEL_CENTER_SLOT_SIZE,
         );
         self.draw_slot_frame(hotbar_slot, center_slot, 1.0);
-        if let Some(item) = self.selected_item {
+        if let Some(item) = self.selected_item() {
             let def = catalog.get(item);
             draw_rectangle_lines(
                 center_slot.x,
@@ -304,42 +303,39 @@ impl StackInventory {
         }
 
         for slot in &layout.wheel_slots {
-            let selected = self.selected_item == Some(slot.item);
+            let selected = self.selected_hotbar_slot == slot.key_index;
             self.draw_slot_frame(hotbar_slot, slot.rect, if selected { 1.0 } else { 0.92 });
             if selected {
-                draw_rectangle_lines(
-                    slot.rect.x,
-                    slot.rect.y,
-                    slot.rect.w,
-                    slot.rect.h,
-                    3.0,
-                    catalog.get(slot.item).accent,
-                );
+                let border = slot
+                    .item
+                    .map(|item| catalog.get(item).accent)
+                    .unwrap_or(Color::from_hex(0xE5C983));
+                draw_rectangle_lines(slot.rect.x, slot.rect.y, slot.rect.w, slot.rect.h, 3.0, border);
             }
 
-            if let Some(key_index) = slot.key_index {
-                draw_text_ex(
-                    hotbar_key_label(key_index),
-                    slot.rect.x + 4.0,
-                    slot.rect.y + 12.0,
-                    TextParams {
-                        font_size: 12,
-                        color: Color::from_hex(0xF6D98F),
-                        ..Default::default()
-                    },
-                );
-            }
-
-            let def = catalog.get(slot.item);
-            let icon_pad = if selected { 5.0 } else { 6.0 };
-            let icon_rect = Rect::new(
-                slot.rect.x + icon_pad,
-                slot.rect.y + icon_pad,
-                slot.rect.w - icon_pad * 2.0,
-                slot.rect.h - icon_pad * 2.0,
+            draw_text_ex(
+                hotbar_key_label(slot.key_index),
+                slot.rect.x + 4.0,
+                slot.rect.y + 12.0,
+                TextParams {
+                    font_size: 12,
+                    color: Color::from_hex(0xF6D98F),
+                    ..Default::default()
+                },
             );
-            draw_item_icon(def, tileset, icon_rect);
-            draw_stack_amount(slot.rect, self.amount(slot.item), 13, 0.72);
+
+            if let Some(item) = slot.item {
+                let def = catalog.get(item);
+                let icon_pad = if selected { 5.0 } else { 6.0 };
+                let icon_rect = Rect::new(
+                    slot.rect.x + icon_pad,
+                    slot.rect.y + icon_pad,
+                    slot.rect.w - icon_pad * 2.0,
+                    slot.rect.h - icon_pad * 2.0,
+                );
+                draw_item_icon(def, tileset, icon_rect);
+                draw_stack_amount(slot.rect, self.amount(item), 13, 0.72);
+            }
         }
     }
 
@@ -353,7 +349,7 @@ impl StackInventory {
         let rect = layout.hud_rect;
         self.draw_slot_frame(hotbar_slot, rect, 1.0);
 
-        if let Some(item) = self.selected_item {
+        if let Some(item) = self.selected_item() {
             let def = catalog.get(item);
             draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 3.0, def.accent);
             let icon_pad = 7.5;
@@ -399,13 +395,12 @@ impl StackInventory {
                 wheel_size,
             ));
 
-            let items = self.wheel_items(catalog);
-            let priority = self.priority_items();
+            let slots = self.wheel_slots(catalog);
             let spin = get_time() as f32 * WHEEL_SPIN_SPEED;
-            let count = items.len().max(1) as f32;
+            let count = slots.len().max(1) as f32;
             let item_radius = WHEEL_RADIUS - WHEEL_RING_THICKNESS * (1.0 - WHEEL_ITEM_ALIGNMENT);
             let scaled_slot_size = WHEEL_SLOT_SIZE * WHEEL_ITEM_SCALE;
-            for (idx, item) in items.into_iter().enumerate() {
+            for (idx, (key_index, item)) in slots.into_iter().enumerate() {
                 let angle =
                     spin + idx as f32 / count * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
                 let pos = center + vec2(angle.cos(), angle.sin()) * item_radius;
@@ -417,7 +412,7 @@ impl StackInventory {
                         scaled_slot_size,
                         scaled_slot_size,
                     ),
-                    key_index: priority.iter().position(|candidate| *candidate == item),
+                    key_index,
                 });
             }
         }
@@ -429,18 +424,15 @@ impl StackInventory {
         }
     }
 
-    fn wheel_items(&self, catalog: &InventoryCatalog) -> Vec<ItemId> {
-        let mut items = self.priority_items();
-        if let Some(selected) = self.selected_item {
-            if self.amount(selected) > 0 && !items.contains(&selected) {
-                items.insert(0, selected);
-            }
+    fn wheel_slots(&self, catalog: &InventoryCatalog) -> Vec<(usize, Option<ItemId>)> {
+        let mut out = Vec::with_capacity(INVENTORY_WHEEL_SLOTS.max(HOTBAR_SIZE));
+        for slot in 0..HOTBAR_SIZE {
+            let item = self
+                .hotbar_item(slot)
+                .filter(|item| catalog.get(*item).category != ItemCategory::All);
+            out.push((slot, item));
         }
-        items
-            .into_iter()
-            .filter(|item| catalog.get(*item).category != ItemCategory::All)
-            .take(INVENTORY_WHEEL_SLOTS)
-            .collect()
+        out
     }
 
     fn priority_items(&self) -> Vec<ItemId> {
@@ -462,18 +454,9 @@ impl StackInventory {
     }
 
     fn cycle_selection(&mut self, delta: i32) {
-        let items = self.priority_items();
-        if items.is_empty() {
-            self.selected_item = None;
-            return;
-        }
-        let current = self
-            .selected_item
-            .and_then(|item| items.iter().position(|candidate| *candidate == item))
-            .unwrap_or(0);
-        let len = items.len() as i32;
-        let next = (current as i32 + delta).rem_euclid(len) as usize;
-        self.selected_item = Some(items[next]);
+        let len = HOTBAR_SIZE as i32;
+        let next = (self.selected_hotbar_slot as i32 + delta).rem_euclid(len) as usize;
+        self.selected_hotbar_slot = next;
     }
 }
 

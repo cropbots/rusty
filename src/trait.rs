@@ -32,6 +32,22 @@ pub fn append_builtin_traits(traits: &mut Vec<TraitDef>) {
     push_trait("no_misc_collision", &["no_misc_collision"]);
     push_trait("no_player_collision", &["no_player_collision"]);
     push_trait("phase_dungeon_walls", &["phase_dungeon_walls"]);
+    push_trait("point_towards_player", &["point_towards_player"]);
+    push_trait("point_towards_nearest_entity", &["point_towards_nearest_entity"]);
+    push_trait("point_towards_nearest_enemy", &["point_towards_nearest_enemy"]);
+    push_trait("point_towards_nearest_friend", &["point_towards_nearest_friend"]);
+    push_trait("point_towards_nearest_misc", &["point_towards_nearest_misc"]);
+    push_trait("point_towards_target", &["point_towards_target"]);
+    push_trait("target_first_entity", &["target_first_entity"]);
+    push_trait("target_first_enemy", &["target_first_enemy"]);
+    push_trait("target_first_friend", &["target_first_friend"]);
+    push_trait("target_first_misc", &["target_first_misc"]);
+    push_trait("target_first_target", &["target_first_target"]);
+    push_trait("point_towards_first_entity", &["point_towards_first_entity"]);
+    push_trait("point_towards_first_enemy", &["point_towards_first_enemy"]);
+    push_trait("point_towards_first_friend", &["point_towards_first_friend"]);
+    push_trait("point_towards_first_misc", &["point_towards_first_misc"]);
+    push_trait("point_towards_first_target", &["point_towards_first_target"]);
 }
 
 fn cooldown_with_erratic(entity: &EntityInstance, base: f32) -> f32 {
@@ -77,7 +93,7 @@ fn resolve_speed(params: &MovementParams, specific_key: &str, fallback: f32) -> 
 
 fn nearest_entity_target(
     entity: &EntityInstance,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
     kind_filter: Option<EntityKind>,
 ) -> Option<Target> {
     let mut best: Option<(f32, Target)> = None;
@@ -97,6 +113,21 @@ fn nearest_entity_target(
         }
     }
     best.map(|(_, target)| target)
+}
+
+fn first_entity_target(
+    entity: &EntityInstance,
+    ctx: &mut EntityContext<'_>,
+    kind_filter: Option<EntityKind>,
+) -> Option<Target> {
+    ctx.entities
+        .iter()
+        .find(|candidate| {
+            candidate.id != entity.uid
+                && candidate.alive
+                && (kind_filter.is_none() || Some(candidate.kind) == kind_filter)
+        })
+        .map(|candidate| Target::Entity(*candidate))
 }
 
 fn seek_towards_target(
@@ -156,7 +187,7 @@ pub fn movement_idle(
     _behavior: &mut BehaviorRuntime,
     _dt: f32,
     _params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     entity.vel = Vec2::ZERO;
 }
@@ -166,7 +197,7 @@ pub fn movement_wander(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let speed = resolve_speed(params, "wander_speed", entity.speed);
     let interval = params.get("interval").copied().unwrap_or(3.0);
@@ -199,7 +230,7 @@ pub fn movement_seek(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let Some(target) = entity.current_target.as_ref().map(Target::position) else {
         return;
@@ -219,7 +250,7 @@ pub fn movement_flee(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let Some(target) = entity.current_target.as_ref().map(Target::position) else {
         return;
@@ -239,7 +270,7 @@ pub fn movement_watch(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let Some(target) = entity.current_target else {
         return;
@@ -299,7 +330,7 @@ pub fn movement_watch_nearest_entity(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, None) {
         watch_target(entity, behavior, dt, params, target);
@@ -313,7 +344,7 @@ pub fn movement_watch_nearest_enemy(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
         watch_target(entity, behavior, dt, params, target);
@@ -327,7 +358,7 @@ pub fn movement_watch_nearest_friend(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Friend)) {
         watch_target(entity, behavior, dt, params, target);
@@ -341,7 +372,7 @@ pub fn movement_watch_nearest_misc(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Misc)) {
         watch_target(entity, behavior, dt, params, target);
@@ -355,7 +386,7 @@ pub fn movement_watch_player(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(player) = ctx.player {
         watch_target(entity, behavior, dt, params, Target::Player(player));
@@ -369,7 +400,7 @@ pub fn movement_seek_nearest_entity(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, None) {
         seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
@@ -383,7 +414,7 @@ pub fn movement_seek_nearest_enemy(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
         seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
@@ -397,7 +428,7 @@ pub fn movement_seek_nearest_friend(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Friend)) {
         seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
@@ -411,7 +442,7 @@ pub fn movement_seek_nearest_misc(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Misc)) {
         seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
@@ -425,7 +456,7 @@ pub fn movement_seek_player(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(player) = ctx.player {
         seek_towards_target(
@@ -446,7 +477,7 @@ pub fn movement_seek_nearest_farm_tile(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     // Placeholder: until movement callbacks accept map-mutable context, we seek player as proxy target.
     if let Some(player) = ctx.player {
@@ -468,7 +499,7 @@ pub fn movement_smart_seek_farm_tile(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     movement_seek_nearest_farm_tile(entity, behavior, dt, params, ctx);
 }
@@ -478,7 +509,7 @@ pub fn movement_seek_nearest_empty_farm_tile(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     movement_seek_nearest_farm_tile(entity, behavior, dt, params, ctx);
 }
@@ -488,7 +519,7 @@ pub fn movement_bonemeal_current_tile(
     _behavior: &mut BehaviorRuntime,
     _dt: f32,
     _params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     if entity.cropbot_slots.bonemeal.is_some() {
         // Reserved for map stage mutation pipeline.
@@ -500,7 +531,7 @@ pub fn movement_seed_current_tile(
     _behavior: &mut BehaviorRuntime,
     _dt: f32,
     _params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     if entity.cropbot_slots.seed.is_some() {
         // Reserved for map seed placement pipeline.
@@ -512,7 +543,7 @@ pub fn movement_flee_nearest_entity(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, None) {
         flee_from_target(entity, behavior, dt, params, "flee_speed", target);
@@ -526,7 +557,7 @@ pub fn movement_flee_nearest_enemy(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
         flee_from_target(entity, behavior, dt, params, "flee_speed", target);
@@ -540,7 +571,7 @@ pub fn movement_flee_nearest_friend(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Friend)) {
         flee_from_target(entity, behavior, dt, params, "flee_speed", target);
@@ -554,7 +585,7 @@ pub fn movement_flee_nearest_misc(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(target) = nearest_entity_target(entity, ctx, Some(EntityKind::Misc)) {
         flee_from_target(entity, behavior, dt, params, "flee_speed", target);
@@ -568,7 +599,7 @@ pub fn movement_flee_player(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     if let Some(player) = ctx.player {
         flee_from_target(
@@ -589,7 +620,7 @@ pub fn movement_rebound(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let rebound_speed = params
         .get("rebound_speed")
@@ -642,7 +673,7 @@ pub fn movement_dash_at_target(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let dash_speed = params.get("dash_speed").copied().unwrap_or(500.0);
     let dash_duration = params.get("dash_duration").copied().unwrap_or(0.14);
@@ -676,7 +707,7 @@ pub fn movement_curve_dash_at_target(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let dash_speed = params.get("dash_speed").copied().unwrap_or(500.0);
     let dash_duration = params
@@ -744,7 +775,7 @@ pub fn movement_bird_ai(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     // JS parity (gameNightly/modules/ai.js virabirdAi):
     // if dist <= 200 => sMoveTowards(_, player, -1000)
@@ -894,7 +925,7 @@ pub fn movement_virabird_ai(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    ctx: &EntityContext,
+    ctx: &mut EntityContext<'_>,
 ) {
     movement_bird_ai(entity, behavior, dt, params, ctx);
 }
@@ -904,7 +935,7 @@ pub fn movement_bird_orbit(
     behavior: &mut BehaviorRuntime,
     dt: f32,
     params: &MovementParams,
-    _ctx: &EntityContext,
+    _ctx: &mut EntityContext<'_>,
 ) {
     let orbit_speed = params.get("orbit_speed").copied().unwrap_or(1200.0);
     let orbit_radius = params.get("orbit_radius").copied().unwrap_or(80.0);
@@ -955,4 +986,444 @@ pub fn movement_bird_orbit(
             }
         }
     }
+}
+
+pub fn movement_move(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    _ctx: &mut EntityContext<'_>,
+) {
+    let speed = resolve_speed(params, "move_speed", entity.speed);
+    entity.vel += entity.pointing * speed;
+}
+
+pub fn movement_damage_target(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = entity.current_target {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_player(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(player) = ctx.player {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target: Target::Player(player),
+        });
+    }
+}
+
+pub fn movement_damage_nearest_enemy(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_target_by_kind(entity, EntityKind::Enemy) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_nearest_friend(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_target_by_kind(entity, EntityKind::Friend) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_nearest_misc(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_target_by_kind(entity, EntityKind::Misc) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_nearest_entity(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_nearest_any(entity) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_watch_first_entity(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, None) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_first_enemy(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_first_friend(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Friend)) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_watch_first_misc(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Misc)) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_seek_first_entity(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, None) {
+        seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_seek_first_enemy(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
+        seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_seek_first_friend(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Friend)) {
+        seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_seek_first_misc(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Misc)) {
+        seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_flee_first_entity(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, None) {
+        flee_from_target(entity, behavior, dt, params, "flee_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_flee_first_enemy(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Enemy)) {
+        flee_from_target(entity, behavior, dt, params, "flee_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_flee_first_friend(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Friend)) {
+        flee_from_target(entity, behavior, dt, params, "flee_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_flee_first_misc(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = first_entity_target(entity, ctx, Some(EntityKind::Misc)) {
+        flee_from_target(entity, behavior, dt, params, "flee_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_damage_first_enemy(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_by_kind(entity, EntityKind::Enemy) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_first_friend(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_by_kind(entity, EntityKind::Friend) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_first_misc(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_by_kind(entity, EntityKind::Misc) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_first_entity(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_any(entity) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_damage_first_target(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_any(entity) {
+        let damage = params
+            .get("damage")
+            .copied()
+            .unwrap_or(entity.stats.get("damage", 1.0));
+        ctx.damage_events.push(crate::entity::DamageEvent {
+            amount: damage,
+            target,
+        });
+    }
+}
+
+pub fn movement_watch_first_target(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_any(entity) {
+        watch_target(entity, behavior, dt, params, target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_seek_first_target(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_any(entity) {
+        seek_towards_target(entity, behavior, dt, params, "seek_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_flee_first_target(
+    entity: &mut EntityInstance,
+    behavior: &mut BehaviorRuntime,
+    dt: f32,
+    params: &MovementParams,
+    ctx: &mut EntityContext<'_>,
+) {
+    if let Some(target) = ctx.resolve_first_any(entity) {
+        flee_from_target(entity, behavior, dt, params, "flee_speed", target);
+    } else {
+        entity.current_target = None;
+    }
+}
+
+pub fn movement_despawn(
+    entity: &mut EntityInstance,
+    _behavior: &mut BehaviorRuntime,
+    _dt: f32,
+    _params: &MovementParams,
+    _ctx: &mut EntityContext<'_>,
+) {
+    entity.hp = 0.0;
 }

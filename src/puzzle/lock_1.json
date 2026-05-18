@@ -1,0 +1,22 @@
+{
+  "id": "lock_1",
+  "prompt": "Collect the coin!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "collect",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 2,
+      "y": 2
+    },
+    "robot_direction": "up",
+    "cells": [
+      {
+        "x": 4,
+        "y": 0,
+        "kind": "coin"
+      }
+    ]
+  }
+}

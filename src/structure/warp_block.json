@@ -6,9 +6,9 @@
   "foreground": [0],
   "colliders": [15],
   "interactors": [15],
-  "on_interact": ["warp:expedition"],
+  "on_interact": ["warp:farm"],
   "interact_range": 2.5,
-  "overlay": [59],
+  "overlay": [215],
   "frequency": 0.0,
   "max_per_map": 0,
   "min_distance": 0.0

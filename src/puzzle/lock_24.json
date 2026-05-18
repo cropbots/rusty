@@ -1,0 +1,16 @@
+{
+  "id": "lock_24",
+  "prompt": "Move forward 2, then move forward 3!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "move.forward",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 0,
+      "y": 2
+    },
+    "robot_direction": "right",
+    "cells": []
+  }
+}

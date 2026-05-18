@@ -1,0 +1,15 @@
+{
+  "id": "lock_block_v",
+  "width": 1,
+  "height": 2,
+  "background": [0, 0],
+  "foreground": [0, 0],
+  "colliders": [15, 15],
+  "interactors": [15, 15],
+  "on_interact": ["lock_puzzle:basic_lock"],
+  "interact_range": 2.5,
+  "overlay": [227, 227],
+  "frequency": 0.0,
+  "max_per_map": 0,
+  "min_distance": 0.0
+}

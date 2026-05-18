@@ -1,0 +1,27 @@
+{
+  "id": "lock_2",
+  "prompt": "Get to the flag!",
+  "starter_code": "-- Your solution here",
+  "validator_contains": "flag",
+  "viz_config": {
+    "width": 5,
+    "height": 5,
+    "robot_start": {
+      "x": 0,
+      "y": 2
+    },
+    "robot_direction": "right",
+    "cells": [
+      {
+        "x": 2,
+        "y": 3,
+        "kind": "pushable"
+      },
+      {
+        "x": 2,
+        "y": 4,
+        "kind": "flag"
+      }
+    ]
+  }
+}

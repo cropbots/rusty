@@ -38,9 +38,13 @@ behavior:
             dash_speed: 600
             dash_duration: 0.2
     - type: action
-      name: seek_player
+      name: watch
       params:
-        seek_speed: 180
+        seek_range: 40
+        flee_range: 40
+        seek_force: 50
+        flee_force: 300
+        range_blend: 25
       always: true
     - type: sequence
       children:
